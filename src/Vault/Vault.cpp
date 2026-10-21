@@ -1,1806 +1,937 @@
 #include "Vault.h"
-#include "UIBridge/CBridge.h"
 
-/*
- * The code is a bit messier since I had to fix race conditions
-*/
+#include <algorithm>
+#include <botan/hash.h>
+#include <botan/hex.h>
+
+#include "Net/Notifications.h"
+#include "Sync/SyncEngine.h"
+#include "Util/Util.h"
+
 namespace ClientWarden {
-    /*
-     * Check if the user is Logged in or not and
-     * load session data.
-     * TODO: Add logger stuff, I think I already did this
-     * idk tho.
-    */
-    Vault::Vault() : profile(session.vaultData), crypto(session.encKey, session.macKey, session.internalKey), clipboard(session.settingsData), features(session.vaultData) {
-        if (!logger) {
-            spdlog::set_pattern("[%H:%M:%S] [%n] [%^---%L---%$] [thread %t] %v");
+    namespace {
+        constexpr auto Tick = std::chrono::seconds(1);
+        constexpr std::time_t ConnectivityInterval = 15;
+        constexpr const char* LegacyDataCutoff = "2026.6.0";
 
-            std::shared_ptr<spdlog::sinks::stdout_color_sink_mt> console_sink = 
-                std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-            std::shared_ptr<spdlog::sinks::basic_file_sink_mt> file_sink = 
-                std::make_shared<spdlog::sinks::basic_file_sink_mt>(storage.path.string() + "/cw.log", true);
-
-            logger = std::make_shared<spdlog::logger>("ClientWarden::Vault", spdlog::sinks_init_list{console_sink, file_sink});
-            logger->set_level(spdlog::level::trace);
-            logger->flush_on(spdlog::level::trace);
-            spdlog::register_logger(logger);
-        }
-
-        /*
-         * DOCS: Separate Threads into services
-        */
-        session.wssThread.setCallback([this](const std::atomic<bool>& shouldThread) {
-            keychain::Error e1;
-            keychain::Error e2;
-
-            std::string accessString = keychain::getPassword(CWbundleID, "accessString", e1);
-            std::string wssString = keychain::getPassword(CWbundleID, "wssURL", e2);
-
-            if (e1.type != keychain::ErrorType::NoError || e2.type != keychain::ErrorType::NoError) {
-                logger->info("Failed to get keychain value");
-                return false;
-            }
-
-            std::function<void(int notifyType)> websocketLambda = [this](int notifyType) {
-                switch (notifyType) {
-                    case 0: 
-                        /*
-                        * Cipher is Updated
-                        */
-                        Sync();
-                        break;
-                    case 1:
-                        /*
-                        * Cipher is created
-                        */
-                        Sync();
-                        break;
-                    case 2:
-                        /*
-                        * Cipher is deleted
-                        */
-                        Sync();
-                        break;
-                    case 3:
-                        /*
-                        * Folder is deleted
-                        */
-                        Sync();
-                        break;
-                    case 4:
-                        /*
-                        * All Ciphers changed
-                        */
-                        Sync(true);
-                        break;
-                    case 5:
-                        /*
-                        * Whole Vault Changed
-                        */
-                        Sync(true);
-                        break;
-                    case 6:
-                        /*
-                        * Org Keys Changed
-                        * TODO: Update Org Keys
-                        */
-                        break;
-                    case 7:
-                        /*
-                        * Folder is created
-                        */
-                        Sync();
-                        break;
-                    case 8:
-                        /*
-                        * Folder is updated
-                        */
-                        Sync();
-                        break;
-                    case 9:
-                        /*
-                        * Cipher is binned
-                        */
-                        Sync();
-                        break;
-                    case 10:
-                        /*
-                        * Account settings changed
-                        * TODO: Update Keychain
-                        */
-                        break;
-                    case 11:
-                        std::thread([this]() {
-                            Logout();
-                        }).detach();
-                        break;
-                    default:
-                        logger->info("Unhandled type: {}", notifyType);
-                        break;
+        int CompareVersions(const std::string& a, const std::string& b) {
+            auto parts = [](const std::string& v) {
+                std::vector<int> out;
+                std::istringstream ss(v);
+                for (std::string p; std::getline(ss, p, '.');) {
+                    try { out.push_back(std::stoi(p)); } catch (...) { out.push_back(0); }
                 }
+                return out;
             };
-            
-            bool lastResult = true;
-
-            while (shouldThread) {
-                lastResult = network.websocketLoop(websocketLambda, accessString, wssString, shouldThread);
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            auto pa = parts(a);
+            auto pb = parts(b);
+            for (size_t i = 0; i < std::max(pa.size(), pb.size()); ++i) {
+                int x = i < pa.size() ? pa[i] : 0;
+                int y = i < pb.size() ? pb[i] : 0;
+                if (x != y) return x < y ? -1 : 1;
             }
+            return 0;
+        }
 
-            return lastResult;
-        });
-
-        session.refreshThread.setCallback([this](const std::atomic<bool>& shouldThread) {
-            while (shouldThread.load()) {
-                /*
-                 * Don't refresh if the device is offline
-                */
-                if (network.getConnectivity() == VaultConnectivity::Offline) {
-                    std::this_thread::sleep_for(std::chrono::seconds(1));
-                    continue;
-                }
-
-                /*
-                 * Get the Next Refresh Time and Access String
-                 * DOCS: Access String should be stored in session
-                */
-                keychain::Error e1;
-                keychain::Error e2;
-
-                std::string needsRefreshTime = keychain::getPassword(CWbundleID, "needsRefreshTime", e1);
-                std::string accessString = keychain::getPassword(CWbundleID, "accessString", e2);
-
-                if (e1.type != keychain::ErrorType::NoError || e2.type != keychain::ErrorType::NoError) {
-                    logger->info("Failed to get keychain value");
-                    return false;
-                }
-
-                /*
-                 * Compare expiry vs current
-                */
-                std::time_t expiry = BitwardenTime(needsRefreshTime);
-                std::time_t now = std::time(nullptr);
-
-                if (now >= expiry || !network.checkAccessTokenValidity(accessString)) {
-                    std::string refreshTime = keychain::getPassword(CWbundleID, "refreshToken", e1);
-
-                    if (e1.type != keychain::ErrorType::NoError) {
-                        logger->info("Failed to get keychain value");
-                        return false;
-                    }
-
-                    std::optional<nlohmann::json> refreshBody = network.refreshToken(refreshTime);
-
-                    /*
-                     * If it fails, then wait to prevent rate limiting and then retry
-                    */
-                    if (!refreshBody.has_value()) {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                        continue;
-                    }
-
-                    /*
-                     * Log out if the refresh Token is invalid, bc
-                     * if its invalid, that means that the refresh token has
-                     * been revoked
-                    */
-                    if (refreshBody.value().contains("error") && refreshBody.value()["error"].is_string() && 
-                        refreshBody.value()["error"] == "invalid_grant") {
-                        std::thread([this]() {
-                            Logout();
-                        }).detach();
-                        break;
-                    }
-
-                    /*
-                     * Check if the AccessToken and Expires Data is valid
-                    */
-                    if (!refreshBody.value().contains("access_token") || !refreshBody.value()["access_token"].is_string() ||
-                        !refreshBody.value().contains("expires_in") || !refreshBody.value()["expires_in"].is_string()) {
-                        logger->info("Failed to get access token from network");
-                        return false;
-                    }
-
-                    /*
-                     * Set Access Token and Next Expires In
-                    */
-                    keychain::setPassword(CWbundleID, "accessString", refreshBody.value()["access_token"], e1);
-                    keychain::setPassword(CWbundleID, "expiresIn", refreshBody.value()["expires_in"], e2);
-
-                    if (e1.type != keychain::ErrorType::NoError || e2.type != keychain::ErrorType::NoError) {
-                        logger->info("Failed to set keychain value");
-                        return false;
-                    }
-
-                    std::string nextRefreshTime = getBitwardenTime(refreshBody.value()["expires_in"].get<int>());
-                    keychain::setPassword(CWbundleID, "needsRefreshTime", nextRefreshTime, e1);
-
-                    if (e1.type != keychain::ErrorType::NoError) {
-                        logger->info("Failed to set keychain value");
-                        return false;
-                    }
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-            return true;
-        });
-
-        session.connectivityThread.setCallback([this](const std::atomic<bool>& shouldThread) {
-            while (shouldThread.load()) {
-                network.checkConnectivity();
-
-                /*
-                 * If the device isnt offline and the vault hasn't been versioned against the
-                 * network, then we should check.
-                */
-                if (network.getConnectivity() == VaultConnectivity::Online && features.pendingNetworkCheck()) {
-                    std::optional<std::string> res = network.getVersion();
-                    if (res.has_value()) {
-                        features.determineVaultVersion(res.value());
-                    }
-                }
-
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-            return true;
-        });
-
-        session.autoLockThread.setCallback([this](const std::atomic<bool>& shouldThread) {
-            while (shouldThread.load()) {
-                std::unique_lock<std::recursive_mutex> lock_chk(inactivityTimerMutex);
-
-                /*
-                 * Used to auto lock
-                */
-                if (state == AuthState::Unlocked && inactivityTimer.has_value()) {
-                    time_t now = time(nullptr);
-                    double elapsed = difftime(now, *inactivityTimer);
-
-                    if (elapsed >= static_cast<double>(GetAutoLockDelay())) {
-                        inactivityTimer = std::nullopt;
-
-                        SetLockPage();
-
-                        std::thread([this]() {
-                            Lock();
-                        }).detach();
-                    }
-                }
-
-                lock_chk.unlock();
-
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            }
-            return true;
-        });
-
-        keychain::Error err1;
-
-        std::string needsRefreshTime = keychain::getPassword(CWbundleID, "email", err1);
-
-        if (err1.type != keychain::ErrorType::NoError || !storage.exists("vault.json")) {
-            state = AuthState::LoggedOut;
-        } else {
-            state = AuthState::Unlockable;
-
-            std::unique_lock<std::recursive_mutex> lock_vdset(session.vaultDataMutex);
-            *session.vaultData = nlohmann::json::parse(storage.read("vault.json"));
-            lock_vdset.unlock();
-
-            keychain::Error e1;
-            keychain::Error e2;
-            keychain::Error e3;
-            keychain::Error e4;
-
-            std::string vaultURL = keychain::getPassword(CWbundleID, "vaultURL", e1);
-            std::string mainURL = keychain::getPassword(CWbundleID, "mainURL", e2);
-            std::string apiURL = keychain::getPassword(CWbundleID, "apiURL", e3);
-            std::string iconURL = keychain::getPassword(CWbundleID, "iconURL", e4);
-
-            if (e1.type != keychain::ErrorType::NoError || e2.type != keychain::ErrorType::NoError || 
-                e3.type != keychain::ErrorType::NoError || e4.type != keychain::ErrorType::NoError) {
-                logger->info("URL Info Not Found in KeyChain");
-                state = AuthState::Failed;
-            }
-
-            network.initNetwork(vaultURL, mainURL, apiURL, iconURL);
+        std::string IdOf(const nlohmann::json& r) {
+            auto it = r.find("id");
+            return it != r.end() && it->is_string() ? it->get<std::string>() : std::string();
         }
 
         /*
-         * DOCS: Should be part of Vault Session
+         * Bare hostname of a URL (icon lookups, passkey relying party). Anything that isn't a plain DNS
+         * name is rejected so a crafted URI can't steer the request path.
         */
-        if (storage.exists("settings.json")) {
-            std::unique_lock<std::recursive_mutex> lock_sdset(session.vaultDataMutex);
-            *session.settingsData = nlohmann::json::parse(storage.read("settings.json"));
-            lock_sdset.unlock();
-        } else {
-            std::unique_lock<std::recursive_mutex> lock_sdset(session.vaultDataMutex);
-            (*session.settingsData)["clipboardClear"] = 30;
-
-            storage.write("settings.json", session.settingsData->dump(2));
-            lock_sdset.unlock();
+        std::optional<std::string> HostName(std::string_view url) {
+            if (size_t scheme = url.find("://"); scheme != std::string_view::npos) {
+                std::string s = ToLower(url.substr(0, scheme));
+                if (s != "http" && s != "https") {
+                    return std::nullopt;
+                }
+                url.remove_prefix(scheme + 3);
+            } else if (size_t colon = url.find(':'); colon != std::string_view::npos && colon < url.find('/') &&
+                (colon + 1 >= url.size() || !std::isdigit(static_cast<unsigned char>(url[colon + 1])))) {
+                return std::nullopt;    // mailto:, javascript:, ...
+            }
+            url = url.substr(0, url.find_first_of("/?#:"));
+            if (url.empty() || url.size() > 253 || url.find('.') == std::string_view::npos) {
+                return std::nullopt;
+            }
+            for (unsigned char c : url) {
+                if (!std::isalnum(c) && c != '.' && c != '-') {
+                    return std::nullopt;
+                }
+            }
+            return ToLower(url);
         }
+
+        void Replace(std::vector<Record>& records, const Record& old, nlohmann::json replacement) {
+            auto it = std::find(records.begin(), records.end(), old);
+            if (it != records.end()) {
+                *it = std::make_shared<const nlohmann::json>(std::move(replacement));
+            }
+        }
+    }
+
+    Vault::Vault(Dependencies deps)
+        : secrets(std::move(deps.secrets)),
+          files(std::move(deps.files)),
+          transport(std::move(deps.transport)),
+          api(*transport, DeviceInfo::ForThisPlatform(Session::DeviceId(*secrets))),
+          session(*secrets, api),
+          store(*files),
+          settings(*files),
+          generator(PasswordGenerator::FromBundle()) {
+        api.SetTokenSource(&session);
+        session.OnRevoked([this] { Post([this] { Logout(); }); });
+        settings.Load();
+
+        std::optional<Account> account = session.LoadAccount();
+        if (account && session.LoadTokens() && store.Load() && !store.Empty()) {
+            api.Configure(account->urls);
+            state = AuthState::Unlockable;
+        } else {
+            state = AuthState::LoggedOut;
+        }
+
+        worker = std::jthread([this](std::stop_token stop) { BackgroundLoop(stop); });
     }
 
     Vault::~Vault() {
-        Lock();
-    }
-
-    /*
-     * While there can only be 1 instance of
-     * Vault, only the UIBridge must use it, 
-     * bc there is a possibility for Vault
-     * to be expanded to multiple instances
-     * 
-     * This is a hacky solution
-     * DOCS: Use VaultManager
-    */
-    
-    Vault* Vault::inst = nullptr;
-
-    Vault& Vault::Instance() {
-        if (!inst) {
-            inst = new Vault();
+        worker.request_stop();
+        taskCv.notify_all();
+        if (worker.joinable()) {
+            worker.join();
         }
-
-        return *inst;
+        StopNotifications();
+        session.ClearKeys();
     }
 
-    void Vault::DestroyInstance() {
-        delete inst;
-        inst = nullptr;
+    void Vault::OnStateChange(std::function<void(AuthState)> callback) {
+        std::lock_guard lock(observerMutex);
+        observer = std::move(callback);
     }
 
-    /*
-     * Store the URI's in Keychain for easy access
-    */
-    void Vault::SetUris(std::string vaultUri, std::string mainUri, std::string apiUri, std::string iconUri, std::string wssUri) {
-        keychain::Error e1;
-        keychain::Error e2;
-        keychain::Error e3;
-        keychain::Error e4;
-        keychain::Error e5;
-
-        keychain::setPassword(CWbundleID, "vaultURL", vaultUri, e1);
-        keychain::setPassword(CWbundleID, "mainURL", mainUri, e2);
-        keychain::setPassword(CWbundleID, "apiURL", apiUri, e3);
-        keychain::setPassword(CWbundleID, "iconURL", iconUri, e4);
-        keychain::setPassword(CWbundleID, "wssURL", wssUri, e5);
-
-        if (e1.type != keychain::ErrorType::NoError || e2.type != keychain::ErrorType::NoError || 
-            e3.type != keychain::ErrorType::NoError || e4.type != keychain::ErrorType::NoError || 
-            e5.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to set KeyChain Value");
+    void Vault::SetState(AuthState next) {
+        if (state.exchange(next) == next) {
             return;
         }
-
-        network.initNetwork(vaultUri, mainUri, apiUri, iconUri);
+        std::function<void(AuthState)> callback;
+        {
+            std::lock_guard lock(observerMutex);
+            callback = observer;
+        }
+        if (callback) {
+            callback(next);
+        }
     }
 
-    bool Vault::pLogin(std::optional<nlohmann::json> token) {
-        if (!token.has_value() || !token.value().contains("access_token") || !token.value().contains("refresh_token") ||
-            !token.value().contains("expires_in") || !token.value()["access_token"].is_string() ||
-            !token.value()["refresh_token"].is_string() || !token.value()["expires_in"].is_number()) {
-            logger->info("Invalid token in pLogin");
-            return false;
-        }
+    Crypto::SymmetricKey Vault::UserKey() const {
+        return session.UserKey();
+    }
 
-        /*
-         * First, we must set the accessString and refreshToken to the Keychain
-         * for security
-        */
-        keychain::Error e1;
-        keychain::Error e2;
-        keychain::Error e3;
-
-        keychain::setPassword(CWbundleID, "accessString", token.value()["access_token"], e1);
-        keychain::setPassword(CWbundleID, "refreshToken", token.value()["refresh_token"], e2);
-        keychain::setPassword(CWbundleID, "expiresIn", std::to_string(token.value()["expires_in"].get<int>()), e3);
-
-        if (e1.type != keychain::ErrorType::NoError || e2.type != keychain::ErrorType::NoError || 
-            e3.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to set KeyChain Value");
-            return false;
-        }
-
-        std::string refreshTime = getBitwardenTime(token.value()["expires_in"].get<int>());
-        keychain::setPassword(CWbundleID, "needsRefreshTime", refreshTime, e1);
-
-        if (e1.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to set KeyChain Value");
-            return false;
-        }
-
-        /*
-         * Run a FullSync
-         * - Replace vault.json with a fresh one 
-         *   from the server
-        */
-        if (!Sync(true)) {
-            return false;
-        }
-
-        /*
-         * Get the Protected key to retrieve the Vault Enc and Mac Key
-        */
-        std::unique_lock<std::recursive_mutex> lock_vdget(session.vaultDataMutex);
-        std::string protectedKey = (*session.vaultData)["profile"]["key"];
-        lock_vdget.unlock();
-
-        Botan::secure_vector<uint8_t> stretchedEncKey = crypto.hkdfStretch("enc");
-        Botan::secure_vector<uint8_t> stretchedMacKey = crypto.hkdfStretch("mac");
-
-        auto [encKey, macKey] = crypto.getEncMacKey(protectedKey, stretchedEncKey, stretchedMacKey);
-        
-        *session.encKey = std::move(encKey);
-        *session.macKey = std::move(macKey);
-
-        /*
-         * DOCS: Should use a service.start() model
-        */
-        session.wssThread.start();
-        session.refreshThread.start();
-        session.connectivityThread.start();
-        session.autoLockThread.start();
-
-        state = AuthState::Unlocked;
-
-        /*
-         * Get the Vault Version
-        */
-        features.determineVaultVersion();
-
-        if (network.getConnectivity() == VaultConnectivity::Online) {
-            std::optional<std::string> res = network.getVersion();
-            if (res.has_value()) {
-                features.determineVaultVersion(res.value());
-            }
-        }
-
-        return true;
+    bool Vault::NeedsLegacyData() const {
+        std::string version = store.ServerVersion();
+        return version.empty() || CompareVersions(version, LegacyDataCutoff) < 0;
     }
 
     /*
-     * Since encryption requires a case-sensitive lowercase email
-     * as a salt, we must lowercase the email using boost. Then
-     * we can run the preLogin to get our KDF Iterations and salt.
+     * Login
     */
-    bool Vault::Login(std::string& email, std::string& password) {
-        boost::algorithm::to_lower(email);
-        
-        std::optional<nlohmann::json> preLogin = network.preLogin(email);
-        if (!preLogin.has_value()) {
-            return false;
+    void Vault::SetServer(const ServerUrls& urls) {
+        if (!urls.Valid()) {
+            throw VaultError("server URLs must start with http:// or https://");
         }
+        std::lock_guard lock(authMutex);
+        pendingUrls = urls;
+        api.Configure(urls);
+    }
 
-        keychain::Error e1;
-        keychain::Error e2;
-        keychain::Error e3;
-        keychain::Error e4;
-        keychain::Error e5;
-        keychain::Error e6;
+    LoginResult Vault::Login(std::string_view rawEmail, std::string_view password) {
+        std::string email = ToLower(rawEmail);
+        while (!email.empty() && std::isspace(static_cast<unsigned char>(email.back()))) email.pop_back();
+        while (!email.empty() && std::isspace(static_cast<unsigned char>(email.front()))) email.erase(email.begin());
 
-        keychain::setPassword(CWbundleID, "kdfType", std::to_string(preLogin.value()["kdf"].get<int>()), e1);
-        keychain::setPassword(CWbundleID, "kdfIterations", std::to_string(preLogin.value()["kdfIterations"].get<int>()), e2);
-        keychain::setPassword(CWbundleID, "kdfMemory", "0", e3);
-        keychain::setPassword(CWbundleID, "kdfParallelism", "0", e4);
-        keychain::setPassword(CWbundleID, "salt", email, e5);
-        keychain::setPassword(CWbundleID, "email", email, e6);
-
-        /*
-         * Set Argon2ID values if its Argon2ID
-        */
-        if (preLogin.value()["kdf"].get<int>() == 1) {
-            if (preLogin.value().contains("kdfMemory") && preLogin.value()["kdfMemory"].is_number() &&
-                preLogin.value().contains("kdfParallelism") && preLogin.value()["kdfParallelism"].is_number()) {
-                keychain::setPassword(CWbundleID, "kdfMemory", std::to_string(preLogin.value()["kdfMemory"].get<int>()), e5);
-                keychain::setPassword(CWbundleID, "kdfParallelism", std::to_string(preLogin.value()["kdfParallelism"].get<int>()), e6);
+        {
+            std::lock_guard lock(authMutex);
+            if (!pendingUrls) {
+                throw VaultError("SetServer must be called before Login");
             }
         }
 
-        if (e1.type != keychain::ErrorType::NoError || e2.type != keychain::ErrorType::NoError || 
-            e3.type != keychain::ErrorType::NoError || e4.type != keychain::ErrorType::NoError ||
-            e5.type != keychain::ErrorType::NoError || e6.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to set KeyChain Value");
-            return false;
+        std::optional<Crypto::KdfParams> kdf = api.PreLogin(email);
+        if (!kdf) {
+            return api.Online() ? LoginResult::Failed : LoginResult::Offline;
         }
 
-        /*
-         * Avoid Using Keychain as it is resource intensive
-         */
-        std::string salt = email;
-        int kdfIterations = preLogin.value()["kdfIterations"].get<int>();
-        int kdfType = preLogin.value()["kdf"].get<int>();
-        int kdfMemory = 0;
-        int kdfParallelism = 0;
+        PendingLogin login { email, *kdf };
+        try {
+            login.masterKey = Crypto::DeriveMasterKey(password, email, *kdf);
+        } catch (const CryptoError& e) {
+            Log()->error("Refusing server KDF settings: {}", e.what());
+            return LoginResult::Failed;
+        }
+        login.passwordHash = Crypto::HashMasterPassword(login.masterKey, password);
 
-        if (preLogin.value()["kdf"].get<int>() == 1) {
-            kdfMemory = preLogin.value()["kdfMemory"].get<int>();
-            kdfParallelism = preLogin.value()["kdfParallelism"].get<int>();
+        TokenResponse token = api.PasswordGrant(email, login.passwordHash);
+        {
+            std::lock_guard lock(authMutex);
+            pending = std::move(login);
+        }
+        return HandleToken(token);
+    }
+
+    LoginResult Vault::SubmitCode(std::string_view code) {
+        std::optional<PendingLogin> login;
+        {
+            std::lock_guard lock(authMutex);
+            login = pending;
+        }
+        if (!login) {
+            return LoginResult::Failed;
         }
 
-        /*
-         * Get the Internal and Master Password Hash
-        */
-        *session.internalKey = std::move(crypto.makeKey(password, salt, kdfType, kdfIterations, kdfMemory, kdfParallelism));
-        session.masterPasswordHash = crypto.hashedPassword(password, *session.internalKey);
+        TokenResponse token;
+        if (State() == AuthState::WaitingForTOTP) {
+            token = api.PasswordGrant(login->email, login->passwordHash, TwoFactorToken { TwoFactorProvider::Authenticator, std::string(code) });
+        } else if (State() == AuthState::WaitingForDeviceVerif) {
+            token = api.PasswordGrant(login->email, login->passwordHash, std::nullopt, std::string(code));
+        } else {
+            return LoginResult::Failed;
+        }
+        return HandleToken(token);
+    }
 
-        /*
-         * Erase the password safely
-         */
-        OPENSSL_cleanse(password.data(), password.size());
-        password.clear();
+    std::optional<PasskeyRequest> Vault::PendingPasskey() const {
+        std::lock_guard lock(authMutex);
+        return pending ? pending->passkey : std::nullopt;
+    }
 
-        std::optional<nlohmann::json> token = network.getToken(email, session.masterPasswordHash);
-        if (token.has_value()) {
-            if (token.value().contains("error_description")) {
-                /*
-                 * Check for 2FA
-                 * DOCS: Use VaultAuthFlow to co-ordinate which 2FA can be used 
-                */
-                if (token.value()["error_description"] == "Two factor required." && token.value().contains("TwoFactorProviders") && 
-                    !token.value()["TwoFactorProviders"].empty()) {
-                    if (token.value()["TwoFactorProviders"][0] == "0") {
-                        state = AuthState::WaitingForTOTP;
-                        return true;
-                    } else if (token.value()["TwoFactorProviders"][0] == "7") {
-                        /*
-                         * Passkey Support
-                        */
-                        if (token.value().contains("TwoFactorProviders2") && token.value()["TwoFactorProviders2"].contains("7") &&
-                            token.value()["TwoFactorProviders2"]["7"].contains("challenge")) {
-                            passkeyChallenge = token.value()["TwoFactorProviders2"]["7"]["challenge"];
-                            state = AuthState::WaitingForPasskey;
-                            return true;
+    LoginResult Vault::SubmitPasskey(std::span<const uint8_t> credentialId, std::span<const uint8_t> authenticatorData,
+        std::span<const uint8_t> clientDataJson, std::span<const uint8_t> signature) {
+        std::optional<PendingLogin> login;
+        {
+            std::lock_guard lock(authMutex);
+            login = pending;
+        }
+        if (!login || State() != AuthState::WaitingForPasskey) {
+            return LoginResult::Failed;
+        }
+
+        auto b64url = [](std::span<const uint8_t> bytes) {
+            std::string s = Crypto::Base64Encode(bytes);
+            std::replace(s.begin(), s.end(), '+', '-');
+            std::replace(s.begin(), s.end(), '/', '_');
+            s.erase(std::find(s.begin(), s.end(), '='), s.end());
+            return s;
+        };
+
+        nlohmann::json assertion = {
+            { "id", b64url(credentialId) },
+            { "rawId", b64url(credentialId) },
+            { "type", "public-key" },
+            { "extensions", { { "appid", false } } },
+            { "response", {
+                { "authenticatorData", b64url(authenticatorData) },
+                { "clientDataJson", b64url(clientDataJson) },
+                { "signature", b64url(signature) }
+            } }
+        };
+        return HandleToken(api.PasswordGrant(login->email, login->passwordHash, TwoFactorToken { TwoFactorProvider::WebAuthn, assertion.dump() }));
+    }
+
+    LoginResult Vault::HandleToken(const TokenResponse& token) {
+        using Kind = TokenResponse::Kind;
+
+        switch (token.kind) {
+            case Kind::Success:
+                return CompleteLogin(token);
+
+            case Kind::TwoFactorRequired: {
+                bool webAuthn = std::find(token.providers.begin(), token.providers.end(), TwoFactorProvider::WebAuthn) != token.providers.end();
+                bool totp = std::find(token.providers.begin(), token.providers.end(), TwoFactorProvider::Authenticator) != token.providers.end();
+                if (totp) {
+                    SetState(AuthState::WaitingForTOTP);
+                    return LoginResult::NeedsTotp;
+                }
+                if (webAuthn && !token.webAuthnChallenge.empty()) {
+                    {
+                        std::lock_guard lock(authMutex);
+                        std::string rp = token.webAuthnRelyingParty;
+                        if (rp.empty() && pendingUrls) {
+                            rp = HostName(pendingUrls->vault).value_or("");
                         }
+                        pending->passkey = PasskeyRequest { token.webAuthnChallenge, rp };
                     }
-                } else if (token.value()["error_description"] == "New device verification required") {
-                    state = AuthState::WaitingForDeviceVerif;
-                    return true;
+                    SetState(AuthState::WaitingForPasskey);
+                    return LoginResult::NeedsPasskey;
                 }
-                return false;
+                Log()->warn("No supported two-factor provider offered");
+                return LoginResult::Failed;
             }
 
-            if (!token.value().contains("access_token") || !token.value().contains("refresh_token") ||
-                !token.value().contains("expires_in")) {
-                return false;
-            }
+            case Kind::NewDeviceVerification:
+                SetState(AuthState::WaitingForDeviceVerif);
+                return LoginResult::NeedsDeviceVerification;
 
-            return pLogin(token);
-        } else {
-            return false;
-        }
-    }
+            case Kind::InvalidCredentials:
+                return LoginResult::InvalidCredentials;
 
-    bool Vault::Login(std::string code) {
-        std::optional<nlohmann::json> token;
-
-        keychain::Error e1;
-        keychain::Error e2;
-        keychain::Error e3;
-
-        std::string salt = keychain::getPassword(CWbundleID, "salt", e1);
-
-        if (e1.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to get KeyChain Value");
-            return false;
-        }
-        
-        if (state == AuthState::WaitingForTOTP) {
-            token = network.getTokenWTotp(salt, session.masterPasswordHash, code);
-        } else if (state == AuthState::WaitingForDeviceVerif) {
-            token = network.getTokenWDeviceVerify(salt, session.masterPasswordHash, code);
-        } else {
-            return false;
-        }
-
-        if (token.has_value()) {
-            if (!token.value().contains("access_token") || !token.value().contains("refresh_token") ||
-                !token.value().contains("expires_in")) {
-                return false;
-            }
-
-            return pLogin(token);
-        } else {
-            return false;
-        }
-    }
-
-    /*
-     * Passkey Login
-    */
-    bool Vault::Login(std::string id, std::string authData, std::string clientData, std::string signature) {
-        std::optional<nlohmann::json> token;
-
-        keychain::Error e1;
-        keychain::Error e2;
-        keychain::Error e3;
-
-        std::string salt = keychain::getPassword(CWbundleID, "salt", e1);
-
-        if (e1.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to get KeyChain Value");
-            return false;
-        }
-
-        nlohmann::json passkeyCode;
-
-        passkeyCode["id"] = id;
-        passkeyCode["rawId"] = id;
-        passkeyCode["type"] = "public-key";
-        passkeyCode["extensions"] = nlohmann::json::object();
-        passkeyCode["extensions"]["appid"] = false;
-        passkeyCode["response"] = nlohmann::json::object();
-        passkeyCode["response"]["authenticatorData"] = authData;
-        passkeyCode["response"]["clientDataJson"] = clientData;
-        passkeyCode["response"]["signature"] = signature;
-
-        std::string c_passkeyCode = passkeyCode.dump();
-        
-        if (state == AuthState::WaitingForPasskey) {
-            token = network.getTokenWTotp(salt, session.masterPasswordHash, c_passkeyCode);
-        } else {
-            return false;
-        }
-
-        if (token.has_value()) {
-            if (!token.value().contains("access_token") || !token.value().contains("refresh_token") ||
-                !token.value().contains("expires_in")) {
-                return false;
-            }
-
-            return pLogin(token);
-        } else {
-            return false;
-        }
-    }
-
-    bool Vault::Lock() {
-        state = AuthState::Unlockable;
-
-        /*
-         * Stop all Services
-        */
-        session.wssThread.stop();
-        session.refreshThread.stop();
-        session.connectivityThread.stop();
-        session.autoLockThread.stop();
-        
-        /*
-         * Clean Up Memory
-        */
-        Botan::secure_scrub_memory(session.internalKey->data(), session.internalKey->size());
-        OPENSSL_cleanse(session.masterPasswordHash.data(), session.masterPasswordHash.size());
-        Botan::secure_scrub_memory(session.encKey->data(), session.encKey->size());
-        Botan::secure_scrub_memory(session.macKey->data(), session.macKey->size());
-
-        session.masterPasswordHash.clear();
-
-        return true;
-    }
-
-    bool Vault::checkVaultValidity() {
-        if (!network.checkConnectivity()) {
-            return true;
-        }
-
-        keychain::Error e1;
-        
-        std::string accessString = keychain::getPassword(CWbundleID, "accessString", e1);
-
-        if (e1.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to get KeyChain Value");
-            return true;
-        }
-
-        std::optional<nlohmann::json> profileInfo = network.getProfile(accessString);
-
-        if (profileInfo.has_value()) {
-            if (profileInfo.value().contains("key") && session.vaultData->contains("profile") && 
-                (*session.vaultData)["profile"].contains("key")) {
-                std::string onlVKey = profileInfo.value()["key"];
-                if (profileInfo.value()["key"].get<std::string>() != (*session.vaultData)["profile"]["key"].get<std::string>()) {
-                    std::thread([this]() {
-                        Logout();
-                    }).detach();
-                    return false;
-                }
-            }
-        }
-
-        return true;
-    }
-
-    bool Vault::pUnlock() {
-        /*
-         * Get Protected Key
-        */
-        std::unique_lock<std::recursive_mutex> lock_vdget(session.vaultDataMutex);
-        std::string protectedKey = (*session.vaultData)["profile"]["key"];
-        lock_vdget.unlock();
-
-        /*
-         * Get Vault Enc and Mac Keys
-        */
-        Botan::secure_vector<uint8_t> stretchedEncKey = crypto.hkdfStretch("enc");
-        Botan::secure_vector<uint8_t> stretchedMacKey = crypto.hkdfStretch("mac");
-
-        auto [encKey, macKey] = crypto.getEncMacKey(protectedKey, stretchedEncKey, stretchedMacKey);
-
-        Botan::secure_scrub_memory(stretchedEncKey.data(), stretchedEncKey.size());
-        Botan::secure_scrub_memory(stretchedMacKey.data(), stretchedMacKey.size());
-
-        *session.encKey = std::move(encKey);
-        *session.macKey = std::move(macKey);
-
-        /*
-         * Start All Services
-        */
-        session.wssThread.start();
-        session.refreshThread.start();
-        session.connectivityThread.start();
-        session.autoLockThread.start();
-
-        /*
-         * Sync in the Background
-        */
-        std::jthread t([&] {
-            Sync();
-        });
-
-        state = AuthState::Unlocked;
-
-        /*
-         * Get Vault Version
-        */
-        features.determineVaultVersion();
-
-        if (network.getConnectivity() == VaultConnectivity::Online) {
-            std::optional<std::string> res = network.getVersion();
-            if (res.has_value()) {
-                features.determineVaultVersion(res.value());
-            }
-        }
-        
-        return true;
-    }
-
-    bool Vault::Unlock(std::string& password) {
-        try {
-            keychain::Error e1;
-            keychain::Error e2;
-            keychain::Error e3;
-            keychain::Error e4;
-            keychain::Error e5;
-
-            if (!checkVaultValidity()) {
-                return true;
-            }
-
-            /*
-             * Retrieve Sensitive Data
-            */
-            std::string salt = keychain::getPassword(CWbundleID, "salt", e1);
-            int kdfIterations = std::stoi(keychain::getPassword(CWbundleID, "kdfIterations", e2));
-            int kdfMemory = std::stoi(keychain::getPassword(CWbundleID, "kdfMemory", e3));
-            int kdfParallelism = std::stoi(keychain::getPassword(CWbundleID, "kdfParallelism", e4));
-            int kdfType = std::stoi(keychain::getPassword(CWbundleID, "kdfType", e5));
-
-            if (e1.type != keychain::ErrorType::NoError || e2.type != keychain::ErrorType::NoError || 
-                e3.type != keychain::ErrorType::NoError || e4.type != keychain::ErrorType::NoError ||
-                e5.type != keychain::ErrorType::NoError) {
-                logger->info("Failed to get KeyChain Value");
-                return false;
-            }
-
-            /*
-             * Get the Internal and Master Password Hash
-            */
-            *session.internalKey = std::move(crypto.makeKey(password, salt, kdfType, kdfIterations, kdfMemory, kdfParallelism));
-            session.masterPasswordHash = crypto.hashedPassword(password, *session.internalKey);
-
-            /*
-            * Erase the password safely
-            */
-            OPENSSL_cleanse(password.data(), password.size());
-            password.clear();
-
-            bool result = pUnlock();
-
-            return result;
-        } catch (...) {
-            return false;
-        }
-    }
-
-    /*
-     * Unlock via Biometrics
-    */
-    bool Vault::Unlock() {
-        try {
-            keychain::Error e1;
-            keychain::Error e2;
-            keychain::Error e3;
-
-            if (!checkVaultValidity()) {
-                return true;
-            }
-
-            std::string salt = keychain::getPassword(CWbundleID, "salt", e1);
-            int kdfIterations = std::stoi(keychain::getPassword(CWbundleID, "kdfIterations", e2));
-
-            if (e1.type != keychain::ErrorType::NoError || e2.type != keychain::ErrorType::NoError) {
-                logger->info("Failed to get KeyChain Value");
-                return false;
-            }
-
-            if (!getVaultKeysKeychain()) {
-                return false;
-            }
-
-            return pUnlock();
-        } catch (...) {
-            return false;
-        }
-    }
-
-    void Vault::SetScreenshotOption(bool value) {
-        std::unique_lock<std::recursive_mutex> lock_sdset(session.vaultDataMutex);
-        (*session.settingsData)["allowScreenshots"] = value;
-        storage.write("settings.json", session.settingsData->dump(2));
-        lock_sdset.unlock();
-    }
-
-    bool Vault::GetScreenshotOption() {
-        std::unique_lock<std::recursive_mutex> lock_sdget(session.vaultDataMutex);
-        if (!session.settingsData->contains("allowScreenshots") || !(*session.settingsData)["allowScreenshots"].is_boolean()) {
-            (*session.settingsData)["allowScreenshots"] = false;
-            storage.write("settings.json", session.settingsData->dump(2));
-        }
-
-        bool result = (*session.settingsData)["allowScreenshots"];
-
-        lock_sdget.unlock();
-
-        return result;
-    }
-
-    void Vault::SetAutoLockDelay(int value) {
-        std::unique_lock<std::recursive_mutex> lock_sdset(session.vaultDataMutex);
-        (*session.settingsData)["autoLockDelay"] = value;
-        storage.write("settings.json", session.settingsData->dump(2));
-        lock_sdset.unlock();
-    }
-
-    /*
-     * TODO: TEST + Check if user is inactive, and then run autolock
-    */
-    int Vault::GetAutoLockDelay() {
-        std::unique_lock<std::recursive_mutex> lock_sdget(session.vaultDataMutex);
-        if (!session.settingsData->contains("autoLockDelay") || !(*session.settingsData)["autoLockDelay"].is_number() || (*session.settingsData)["autoLockDelay"] < 5) {
-            (*session.settingsData)["autoLockDelay"] = 300;
-            storage.write("settings.json", session.settingsData->dump(2));
-        }
-
-        int result = (*session.settingsData)["autoLockDelay"];
-
-        lock_sdget.unlock();
-
-        return result;
-    }
-
-    bool Vault::Logout() {
-        try {
-            SetLoginPage();
-            Lock();
-
-            storage.remove("vault.json");
-            storage.remove("settings.json");
-            storage.remove("cw.log");
-
-            keychain::Error e1;
-            keychain::Error e2;
-            keychain::Error e3;
-            keychain::Error e4;
-            keychain::Error e5;
-            keychain::Error e6;
-            keychain::Error e7;
-            keychain::Error e8;
-            keychain::Error e9;
-            keychain::Error e10;
-            keychain::Error e11;
-            keychain::Error e12;
-
-            keychain::deletePassword(CWbundleID, "accessString", e1);
-            keychain::deletePassword(CWbundleID, "apiURL", e2);
-            keychain::deletePassword(CWbundleID, "email", e3);
-            keychain::deletePassword(CWbundleID, "expiresIn", e4);
-            keychain::deletePassword(CWbundleID, "iconURL", e5);
-            keychain::deletePassword(CWbundleID, "kdfIterations", e6);
-            keychain::deletePassword(CWbundleID, "mainURL", e7);
-            keychain::deletePassword(CWbundleID, "needsRefreshTime", e8);
-            keychain::deletePassword(CWbundleID, "refreshToken", e9);
-            keychain::deletePassword(CWbundleID, "salt", e10);
-            keychain::deletePassword(CWbundleID, "vaultURL", e11);
-            keychain::deletePassword(CWbundleID, "wssURL", e12);
-
-            if ((e1.type != keychain::ErrorType::NoError && e1.type != keychain::ErrorType::NotFound) ||
-                (e2.type != keychain::ErrorType::NoError && e2.type != keychain::ErrorType::NotFound) ||
-                (e3.type != keychain::ErrorType::NoError && e3.type != keychain::ErrorType::NotFound) ||
-                (e4.type != keychain::ErrorType::NoError && e4.type != keychain::ErrorType::NotFound) ||
-                (e5.type != keychain::ErrorType::NoError && e5.type != keychain::ErrorType::NotFound) ||
-                (e6.type != keychain::ErrorType::NoError && e6.type != keychain::ErrorType::NotFound) ||
-                (e7.type != keychain::ErrorType::NoError && e7.type != keychain::ErrorType::NotFound) ||
-                (e8.type != keychain::ErrorType::NoError && e8.type != keychain::ErrorType::NotFound) ||
-                (e9.type != keychain::ErrorType::NoError && e9.type != keychain::ErrorType::NotFound) ||
-                (e10.type != keychain::ErrorType::NoError && e10.type != keychain::ErrorType::NotFound) ||
-                (e11.type != keychain::ErrorType::NoError && e11.type != keychain::ErrorType::NotFound) ||
-                (e12.type != keychain::ErrorType::NoError && e12.type != keychain::ErrorType::NotFound)) {
-                logger->info("Failed to remove KeyChain Values");
-                return false;
-            }
-
-            state = AuthState::LoggedOut;
-            return true;
-        } catch (...) {
-            return false;
-        }
-    }
-
-    /*
-     * If an item is added locally, then it will have
-     * a createdOffline Flag.
-     * If an item is changed locally, then it will have
-     * a higher revisionData
-     * If an item is deleted locally, the id will be in 
-     * a deletedCiphers key which stores an ID of all deleted
-     * ciphers until they are deleted in the cloud.
-     * If an item is added online, then it will be synced
-     * If an item is modified online, then it will have a 
-     * higher revision date and will be synced
-     * If an item is deleted online, then the local one will not
-     * have a createdOnline Flag, and so it will be deleted locally
-     * First check if there are items in deletedCiphers
-     *  - If there are, then delete them online
-     * First Iterate through localVault:
-     *  - If an item has createdOffline, then it will be synced to 
-     *    online
-     *  - Check if cipher exists online
-     *  - If a cipher exists online, but the local revisionDate is newer
-     *    - Update Online
-     *  - If a cipher exists online, but the online revisionDate is newer
-     *    - Overwrite Local
-     *  - If a cipher doesnt exist online, and doesnt have createdOffline,
-     *    - Delete Locally
-     * Iterate Online Vault
-     *  - If cipher exists online but not locally and Id isn't in deletedCiphers
-     *    - Add Locally
-     * Save Vault
-    */
-    bool Vault::Sync(bool fullSync) {
-        network.checkConnectivity();
-        if (network.getConnectivity() == VaultConnectivity::Offline) {
-            return false;
-        }
-
-        keychain::Error e1;
-
-        std::string accessString = keychain::getPassword(CWbundleID, "accessString", e1);
-
-        if (e1.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to get KeyChain Value");
-            return false;
-        }
-
-        std::optional<nlohmann::json> vaultResult = network.getVault(accessString);
-
-        if (!vaultResult.has_value()) {
-            return false;
-        }
-        nlohmann::json body = vaultResult.value();
-
-        if (!storage.exists("vault.json") || fullSync) {
-            storage.write("vault.json", body.dump(2));
-
-            std::unique_lock<std::recursive_mutex> lock_vdset(session.vaultDataMutex);
-            *session.vaultData = body;
-            lock_vdset.unlock();
-
-            return true;
-        }
-
-        std::unique_lock<std::recursive_mutex> lock_vdsetget(session.vaultDataMutex);
-        if (!session.vaultData->contains("deletedCiphers")) {
-            (*session.vaultData)["deletedCiphers"] = nlohmann::json::array();
-        }
-        if (!session.vaultData->contains("deletedFolders")) {
-            (*session.vaultData)["deletedFolders"] = nlohmann::json::array();
-        }
-
-        std::vector<std::string> pendingFolderDeletes;
-        for (auto& id : (*session.vaultData)["deletedFolders"]) {
-            pendingFolderDeletes.push_back(id.get<std::string>());
-        }
-
-        auto& deletedFolders = (*session.vaultData)["deletedFolders"];
-        lock_vdsetget.unlock();
-
-        for (auto it = deletedFolders.begin(); it != deletedFolders.end();) {
-            bool result = DeleteFolder(it->get<std::string>());
-            if (!result) {
-                logger->warn("Failed to Delete Online Folder");
-                ++it;
-                continue;
-            }
-            lock_vdsetget.lock();
-            it = deletedFolders.erase(it);
-            lock_vdsetget.unlock();
-        }
-
-        std::vector<std::string> localFolderIds;
-        std::vector<std::string> removalFolderIds;
-
-        std::unique_lock<std::recursive_mutex> lock_vdget(session.vaultDataMutex);
-        auto& l_folders = (*session.vaultData)["folders"];
-        lock_vdget.unlock();
-
-        for (auto& folder : l_folders) {
-            if (!folder.contains("id")) {
-                continue;
-            }
-
-            localFolderIds.push_back(folder["id"]);
-
-            nlohmann::json onlineFolder;
-            bool foundOnlineFolder = false;
-
-            for (auto& onl : body["folders"]) {
-                if (onl.contains("id")) {
-                    std::string onlineId = onl["id"];
-                    std::string localId = folder["id"];
-                    if (onlineId == localId) {
-                        foundOnlineFolder = true;
-                        onlineFolder = onl;
-                        break;
-                    }
-                }
-            }
-
-            if (foundOnlineFolder) {
-                std::time_t localRevDate = BitwardenTime(folder["revisionDate"]);
-                std::time_t onlineRevDate = BitwardenTime(onlineFolder["revisionDate"]);
-
-                if (localRevDate > onlineRevDate) {
-                    /*
-                    * Update Online
-                    */
-                    bool result = RenameFolder(folder["id"], folder["name"]);
-                    if (!result) {
-                        logger->warn("Failed to Update Online Folder");
-                    }
-                    continue;
-                } else if (onlineRevDate > localRevDate) {
-                    /*
-                    * Overwrite Local
-                    */
-                    lock_vdget.lock();
-                    folder = onlineFolder;
-                    lock_vdget.unlock();
-                    continue;
-                }
-            }
-
-            if (!foundOnlineFolder) {
-                /*
-                * Delete Locally
-                */
-                removalFolderIds.push_back(folder["id"]);
-                continue;
-            }
-        }
-
-        std::unique_lock<std::recursive_mutex> lock_vdget1(session.vaultDataMutex);
-        auto& folders = (*session.vaultData)["folders"];
-        lock_vdget1.unlock();
-
-        for (auto it = folders.begin(); it != folders.end();) {
-            if (!it->contains("id") || !(*it)["id"].is_string()) {
-                ++it;
-                continue;
-            }
-
-            std::string id = (*it)["id"].get<std::string>();
-
-            if (std::find(removalFolderIds.begin(), removalFolderIds.end(), id) != removalFolderIds.end()) {
-                lock_vdget1.lock();
-                it = folders.erase(it);
-                lock_vdget1.unlock();
-            } else {
-                ++it;
-            }
-        }
-
-        for (auto& folder : body["folders"]) {
-            if (!folder.contains("id")) {
-                continue;
-            }
-
-            std::string id = folder["id"].get<std::string>();
-            if (std::find(localFolderIds.begin(), localFolderIds.end(), id) == localFolderIds.end()) {
-                if (std::find(pendingFolderDeletes.begin(), pendingFolderDeletes.end(), id) == pendingFolderDeletes.end()) {
-                    /*
-                    * Add Locally
-                    */
-                    std::unique_lock<std::recursive_mutex> lock_vdset1(session.vaultDataMutex);
-                    (*session.vaultData)["folders"].push_back(folder);
-                    lock_vdset1.unlock();
-                }
-            }
-        }
-
-        std::vector<std::string> pendingDeletes;
-
-        std::unique_lock<std::recursive_mutex> lock_vdget2(session.vaultDataMutex);
-        for (auto& id : (*session.vaultData)["deletedCiphers"]) {
-            pendingDeletes.push_back(id.get<std::string>());
-        }
-
-        auto& deletedCiphers = (*session.vaultData)["deletedCiphers"];
-        lock_vdget2.unlock();
-
-        for (auto it = deletedCiphers.begin(); it != deletedCiphers.end();) {
-            bool result = DeleteItem(it->get<std::string>());
-            if (!result) {
-                logger->warn("Failed to Delete Online Item");
-                ++it;
-                continue;
-            }
-            lock_vdget2.lock();
-            it = deletedCiphers.erase(it);
-            lock_vdget2.unlock();
-        }
-
-        std::vector<std::string> localIds;
-        std::vector<std::string> removalIds;
-
-        std::unique_lock<std::recursive_mutex> lock_vdget3(session.vaultDataMutex);
-        auto& l_ciphers = (*session.vaultData)["ciphers"];
-        lock_vdget3.unlock();
-
-        for (auto& cipher : l_ciphers) {
-            if (!cipher.contains("id")) {
-                continue;
-            }
-
-            localIds.push_back(cipher["id"]);
-
-            if (cipher.contains("createdOffline")) {
-                if (cipher["createdOffline"] == true) {
-                    /*
-                    * Sync Online
-                    */
-                    std::optional<nlohmann::json> result = NewItem(cipher);
-                    if (!result.has_value()) {
-                        logger->warn("Failed to Create Online Item");
-                        continue;
-                    }
-
-                    lock_vdget3.lock();
-                    cipher["createdOffline"] = false;
-
-                    nlohmann::json r_json = result.value();
-
-                    if (r_json.contains("id")) {
-                        cipher["id"] = r_json["id"];
-                        localIds.push_back(cipher["id"]);
-                    }
-
-                    if (r_json.contains("revisionDate")) {
-                        cipher["revisionDate"] = r_json["revisionDate"];
-                    }
-
-                    lock_vdget3.unlock();
-                    continue;
-                }
-            }
-
-            nlohmann::json onlineCipher;
-            bool foundOnlineCipher = false;
-
-            for (auto& onl : body["ciphers"]) {
-                if (onl.contains("id")) {
-                    std::string onlineId = onl["id"];
-                    std::string localId = cipher["id"];
-                    if (onlineId == localId) {
-                        foundOnlineCipher = true;
-                        onlineCipher = onl;
-                        break;
-                    }
-                }
-            }
-
-            if (foundOnlineCipher) {
-                std::time_t localRevDate = BitwardenTime(cipher["revisionDate"]);
-                std::time_t onlineRevDate = BitwardenTime(onlineCipher["revisionDate"]);
-
-                if (localRevDate > onlineRevDate) {
-                    /*
-                    * Update Online
-                    */
-                    auto hr = UpdateItem(cipher);
-                    if (!hr) {
-                        logger->warn("Failed to Update Online Item");
-                    }
-                    continue;
-                } else if (onlineRevDate > localRevDate) {
-                    /*
-                    * Overwrite Local
-                    */
-                    lock_vdget3.lock();
-                    cipher = onlineCipher;
-                    lock_vdget3.unlock();
-                    continue;
-                }
-            }
-
-            if (!foundOnlineCipher) {
-                if (cipher.contains("createdOffline")) {
-                    if (cipher["createdOffline"] == true) {
-                        continue;
-                    }
-                }
-                /*
-                * Delete Locally
-                */
-                removalIds.push_back(cipher["id"]);
-                continue;
-            }
-        }
-
-        std::unique_lock<std::recursive_mutex> lock_vdget4(session.vaultDataMutex);
-        auto& ciphers = (*session.vaultData)["ciphers"];
-        lock_vdget4.unlock();
-
-        for (auto it = ciphers.begin(); it != ciphers.end();) {
-            if (!it->contains("id") || !(*it)["id"].is_string()) {
-                ++it;
-                continue;
-            }
-
-            std::string id = (*it)["id"].get<std::string>();
-
-            if (std::find(removalIds.begin(), removalIds.end(), id) != removalIds.end()) {
-                lock_vdget4.lock();
-                it = ciphers.erase(it);
-                lock_vdget4.unlock();
-            } else {
-                ++it;
-            }
-        }
-
-        for (auto& cipher : body["ciphers"]) {
-            if (!cipher.contains("id")) {
-                continue;
-            }
-
-            std::string id = cipher["id"].get<std::string>();
-            if (std::find(localIds.begin(), localIds.end(), id) == localIds.end()) {
-                if (std::find(pendingDeletes.begin(), pendingDeletes.end(), id) == pendingDeletes.end()) {
-                    /*
-                    * Add Locally
-                    */
-                    std::unique_lock<std::recursive_mutex> lock_vdset1(session.vaultDataMutex);
-                    (*session.vaultData)["ciphers"].push_back(cipher);
-                    lock_vdset1.unlock();
-                }
-            }
-        }
-
-        /*
-         * Purge multiple copies
-        */
-        std::unordered_map<std::string, std::time_t> newestCipher;
-        for (auto& cipher : l_ciphers) {
-            if (!cipher.contains("id") || !cipher.contains("revisionDate")) {
-                continue;
-            }
-
-            std::string id = cipher["id"].get<std::string>();
-            std::time_t revDate = BitwardenTime(cipher["revisionDate"]);
-
-            auto found = newestCipher.find(id);
-            if (found == newestCipher.end() || revDate > found->second) {
-                newestCipher[id] = revDate;
-            }
-        }
-
-        std::unordered_set<std::string> nonDupCiphers;
-
-        for (auto it = l_ciphers.begin(); it != l_ciphers.end();) {
-            if (!it->contains("id") || !(*it)["id"].is_string() || !it->contains("revisionDate")) {
-                ++it;
-                continue;
-            }
-
-            std::string id = (*it)["id"].get<std::string>();
-            std::time_t revDate = BitwardenTime((*it)["revisionDate"]);
-
-            if (revDate == newestCipher[id] && !nonDupCiphers.count(id)) {
-                nonDupCiphers.insert(id);
-                ++it;
-            } else {
-                lock_vdget3.lock();
-                it = l_ciphers.erase(it);
-                lock_vdget3.unlock();
-            }
-        }
-
-        std::unique_lock<std::recursive_mutex> lock_vdset2(session.vaultDataMutex);
-        storage.write("vault.json", session.vaultData->dump(2));
-        lock_vdset2.unlock();
-
-        return true;
-    }
-
-    bool Vault::checkReprompt(std::string password) {
-        keychain::Error e1;
-        keychain::Error e2;
-        keychain::Error e3;
-        keychain::Error e4;
-        keychain::Error e5;
-
-        std::string salt = keychain::getPassword(CWbundleID, "salt", e1);
-        int kdfIterations = std::stoi(keychain::getPassword(CWbundleID, "kdfIterations", e2));
-        int kdfMemory = std::stoi(keychain::getPassword(CWbundleID, "kdfMemory", e3));
-        int kdfParallelism = std::stoi(keychain::getPassword(CWbundleID, "kdfParallelism", e4));
-        int kdfType = std::stoi(keychain::getPassword(CWbundleID, "kdfType", e5));
-
-        if (e1.type != keychain::ErrorType::NoError || e2.type != keychain::ErrorType::NoError || 
-            e3.type != keychain::ErrorType::NoError || e4.type != keychain::ErrorType::NoError ||
-            e5.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to get KeyChain Value");
-            return false;
-        }
-        
-        Botan::secure_vector<uint8_t> r_internalKey = std::move(crypto.makeKey(password, salt, kdfType, kdfIterations, kdfMemory, kdfParallelism));
-        std::string r_masterPasswordHash = crypto.hashedPassword(password, r_internalKey);
-
-        if (r_internalKey == *session.internalKey && r_masterPasswordHash == session.masterPasswordHash) {
-            return true;
-        }
-
-        return false;
-    }
-
-    std::vector<std::string> Vault::GetFolders() {
-        /*
-         * Secret Data
-        */
-        std::vector<std::string> folders;
-
-        std::unique_lock<std::recursive_mutex> lock_vdget(session.vaultDataMutex);
-        bool result = !session.vaultData->contains("folders") || !(*session.vaultData)["folders"].is_array();
-        lock_vdget.unlock();
-
-        if (result) {
-            return folders;
-        }
-
-        std::unique_lock<std::recursive_mutex> lock_vdset(session.vaultDataMutex);
-        auto& l_folders = (*session.vaultData)["folders"];
-        lock_vdset.unlock();
-
-        for (auto& folder : l_folders) {
-            folders.push_back(folder["id"]);
-        }
-
-        return std::move(folders);
-    }
-
-    std::optional<nlohmann::json> Vault::NewItem(nlohmann::json encryptedData, bool performVaultOps, nlohmann::json vaultOpsData) {
-        keychain::Error e1;
-        
-        std::string accessString = keychain::getPassword(CWbundleID, "accessString", e1);
-
-        if (e1.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to get KeyChain Value");
-            return std::nullopt;
-        }
-
-        std::optional<nlohmann::json> result = network.NewItem(encryptedData, accessString);
-
-        if (performVaultOps) {
-            if (!result.has_value()) {
-                logger->warn("Failed to add New Item Online");
-                vaultOpsData["createdOffline"] = true;
-
-                std::unique_lock<std::recursive_mutex> lock_vdsetget(session.vaultDataMutex);
-                (*session.vaultData)["ciphers"].push_back(vaultOpsData);
-                storage.write("vault.json", session.vaultData->dump(2));
-                lock_vdsetget.unlock();
-
-                return std::nullopt;
-            }
-            std::unique_lock<std::recursive_mutex> lock_vdsetget(session.vaultDataMutex);
-            (*session.vaultData)["ciphers"].push_back(result.value());
-            storage.write("vault.json", session.vaultData->dump(2));
-            lock_vdsetget.unlock();
-        }
-
-        return result;
-    }
-
-    bool Vault::UpdateItem(nlohmann::json encryptedData) {
-        keychain::Error e1;
-        
-        std::string accessString = keychain::getPassword(CWbundleID, "accessString", e1);
-
-        if (e1.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to get KeyChain Value");
-            return false;
-        }
-
-        std::optional<nlohmann::json> res = network.UpdateItem(encryptedData, accessString);
-        if (res.has_value()) {
-            return true;
-        }
-
-        return false;
-    }
-
-    bool Vault::DeleteItem(std::string uuid, bool performVaultOps, nlohmann::json vaultOpsData) {
-        keychain::Error e1;
-        
-        std::string accessString = keychain::getPassword(CWbundleID, "accessString", e1);
-
-        if (e1.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to get KeyChain Value");
-            return false;
-        }
-
-        bool result = network.DeleteItem(uuid, accessString);
-        if (!result) {
-            logger->warn("Failed to Delete Online Item");
-            if (vaultOpsData.contains("id")) {
-                std::unique_lock<std::recursive_mutex> lock_vdset(session.vaultDataMutex);
-                (*session.vaultData)["deletedCiphers"].push_back(vaultOpsData["id"]);
-                lock_vdset.unlock();
-            }
-        }
-
-        std::unique_lock<std::recursive_mutex> lock_vdset(session.vaultDataMutex);
-        storage.write("vault.json", session.vaultData->dump(2));
-        lock_vdset.unlock();
-    }
-
-    bool Vault::SoftDeleteItem(std::string uuid) {
-        keychain::Error e1;
-        
-        std::string accessString = keychain::getPassword(CWbundleID, "accessString", e1);
-
-        if (e1.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to get KeyChain Value");
-            return false;
-        }
-
-        return network.SoftDeleteItem(uuid, accessString);
-    }
-
-    bool Vault::RestoreItem(std::string uuid) {
-        keychain::Error e1;
-        
-        std::string accessString = keychain::getPassword(CWbundleID, "accessString", e1);
-
-        if (e1.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to get KeyChain Value");
-            return false;
-        }
-
-        return network.RestoreItem(uuid, accessString);
-    }
-
-    bool Vault::ArchiveItem(std::string uuid) {
-        keychain::Error e1;
-        
-        std::string accessString = keychain::getPassword(CWbundleID, "accessString", e1);
-
-        if (e1.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to get KeyChain Value");
-            return false;
-        }
-
-        return network.ArchiveItem(uuid, accessString);
-    }
-
-    bool Vault::UnArchiveItem(std::string uuid) {
-        keychain::Error e1;
-        
-        std::string accessString = keychain::getPassword(CWbundleID, "accessString", e1);
-
-        if (e1.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to get KeyChain Value");
-            return false;
-        }
-
-        return network.UnArchiveItem(uuid, accessString);
-    }
-    
-    std::optional<nlohmann::json> Vault::AddAttachment(std::string uuid, std::string& decryptedFileContents, std::string& decryptedFileName, 
-        std::function<void(float)> onProgress) {
-        auto [attEncKey, attMacKey] = crypto.generateEncMacKeys();
-
-        Botan::secure_vector<uint8_t> attKey(attEncKey.begin(), attEncKey.end());
-        attKey.insert(attKey.end(), attMacKey.begin(), attMacKey.end());
-
-        Botan::secure_vector<uint8_t> cipEncKey = *session.encKey;
-        Botan::secure_vector<uint8_t> cipMacKey = *session.macKey;
-
-        std::unique_lock<std::recursive_mutex> lock_vdget(session.vaultDataMutex);
-        auto l_ciphers = (*session.vaultData)["ciphers"];
-        lock_vdget.unlock();
-        
-        for (auto& cipher : l_ciphers) {
-            if (cipher.contains("id") && cipher["id"] == uuid) {
-                if (!cipher["key"].is_null()) {
-                    auto [cipEnc, cipMac] = crypto.getEncMacKey(cipher["key"]);
-                    cipEncKey = cipEnc;
-                    cipMacKey = cipMac;
-                    Botan::secure_scrub_memory(cipEnc.data(), cipEnc.size());
-                    Botan::secure_scrub_memory(cipMac.data(), cipMac.size());
-                }
+            case Kind::Failed:
                 break;
+        }
+        return api.Online() ? LoginResult::Failed : LoginResult::Offline;
+    }
+
+    LoginResult Vault::CompleteLogin(const TokenResponse& token) {
+        PendingLogin login;
+        ServerUrls urls;
+        {
+            std::lock_guard lock(authMutex);
+            if (!pending || !pendingUrls) {
+                return LoginResult::Failed;
             }
-        }
-        
-        std::string attachmentKey = crypto.Encrypt(attKey, cipEncKey, cipMacKey);
-        Botan::secure_scrub_memory(attKey.data(), attKey.size());
-
-        Botan::secure_vector<uint8_t> a_encryptedFileContents(decryptedFileContents.begin(), decryptedFileContents.end());
-        std::string encryptedFileContents = crypto.EncryptRaw(a_encryptedFileContents, attEncKey, attMacKey);
-        Botan::secure_scrub_memory(a_encryptedFileContents.data(), a_encryptedFileContents.size());
-
-        std::string encryptedFileName = crypto.Encrypt(decryptedFileName, cipEncKey, cipMacKey);
-
-        Botan::secure_scrub_memory(attEncKey.data(), attEncKey.size());
-        Botan::secure_scrub_memory(attMacKey.data(), attMacKey.size());
-        Botan::secure_scrub_memory(cipEncKey.data(), cipEncKey.size());
-        Botan::secure_scrub_memory(cipMacKey.data(), cipMacKey.size());
-
-        keychain::Error e1;
-        
-        std::string accessString = keychain::getPassword(CWbundleID, "accessString", e1);
-
-        if (e1.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to get KeyChain Value");
-            return std::nullopt;
+            login = std::move(*pending);
+            urls = *pendingUrls;
+            pending.reset();
         }
 
-        std::optional<nlohmann::json> res = network.AddAttachment(uuid, encryptedFileContents, encryptedFileName,
-            attachmentKey, accessString, onProgress);
-
-        return res;
-    }
-
-    bool Vault::RemoveAttachment(std::string uuid, std::string attachmentID) {
-        keychain::Error e1;
-        
-        std::string accessString = keychain::getPassword(CWbundleID, "accessString", e1);
-
-        if (e1.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to get KeyChain Value");
-            return false;
+        store.Clear();
+        if (!session.SetTokens(token) || !session.SaveAccount(Account { login.email, login.kdf, urls })) {
+            session.Forget();
+            return LoginResult::Failed;
         }
 
-        return network.RemoveAttachment(uuid, attachmentID, accessString);
-    }
-
-    bool Vault::DownloadAttachment(std::string uuid, std::string attachmentID, std::filesystem::path savePath,
-        Botan::secure_vector<uint8_t> cipEnc, Botan::secure_vector<uint8_t> cipMac, std::function<void(float)> onProgress) {
-        keychain::Error e1;
-        
-        std::string accessString = keychain::getPassword(CWbundleID, "accessString", e1);
-
-        if (e1.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to get KeyChain Value");
-            return false;
+        if (!Sync()) {
+            session.Forget();
+            store.Clear();
+            SetState(AuthState::LoggedOut);
+            return LoginResult::Failed;
         }
 
-        std::optional<std::pair<std::string, nlohmann::json>> attachment = network.DownloadAttachment(uuid, attachmentID, accessString, 
-            onProgress);
-        
-        if (!attachment.has_value()) {
-            return false;
+        if (UnlockWithMasterKey(std::move(login.masterKey)) != UnlockResult::Success) {
+            session.Forget();
+            store.Clear();
+            SetState(AuthState::LoggedOut);
+            return LoginResult::Failed;
         }
-        std::string attKeyPlain = crypto.DecryptAsStr(attachment.value().second["key"], cipEnc, cipMac);
-        if (attKeyPlain.size() != 64) {
-            logger->error("Attachment key wrong size: {}", attKeyPlain.size());
-            return false;
-        }
-        Botan::secure_vector<uint8_t> decEnc(attKeyPlain.begin(), attKeyPlain.begin() + 32);
-        Botan::secure_vector<uint8_t> decMac(attKeyPlain.begin() + 32, attKeyPlain.end());
-
-        OPENSSL_cleanse(attKeyPlain.data(), attKeyPlain.size());
-
-        Botan::secure_vector<uint8_t> vecBuf(attachment.value().first.begin(), attachment.value().first.end());
-
-        std::string decBody = crypto.DecryptRaw(vecBuf, decEnc, decMac);
-
-        attachment.value().first.clear();
-        Botan::secure_scrub_memory(decEnc.data(), decEnc.size());
-        Botan::secure_scrub_memory(decMac.data(), decMac.size());
-        Botan::secure_scrub_memory(vecBuf.data(), vecBuf.size());
-
-        storage.write(savePath, decBody);
-
-        decBody.clear();
-
-        return true;
-    }
-
-    std::optional<nlohmann::json> Vault::CreateFolder(std::string encryptedFolderName) {
-        keychain::Error e1;
-        
-        std::string accessString = keychain::getPassword(CWbundleID, "accessString", e1);
-
-        if (e1.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to get KeyChain Value");
-            return std::nullopt;
-        }
-
-        return network.CreateFolder(encryptedFolderName, accessString);
-    }
-
-    bool Vault::RenameFolder(std::string folderUUID, std::string encryptedFolderName) {
-        keychain::Error e1;
-        
-        std::string accessString = keychain::getPassword(CWbundleID, "accessString", e1);
-
-        if (e1.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to get KeyChain Value");
-            return false;
-        }
-
-        return network.RenameFolder(folderUUID, encryptedFolderName, accessString).has_value();
-    }
-
-    bool Vault::DeleteFolder(std::string folderUUID) {
-        keychain::Error e1;
-        
-        std::string accessString = keychain::getPassword(CWbundleID, "accessString", e1);
-
-        if (e1.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to get KeyChain Value");
-            return false;
-        }
-
-        return network.DeleteFolder(folderUUID, accessString);
-    }
-
-    std::optional<std::string> Vault::DownloadIcon(std::string url) {
-        Botan::secure_vector<uint8_t> urlVec(url.begin(), url.end());
-        std::string b64Url = b64Encode(urlVec)  + ".png";
-        std::string failFile = b64Url + ".failed";
-
-        if (network.getConnectivity() == VaultConnectivity::Offline) {
-            return std::nullopt;
-        }
-
-        if (storage.exists(failFile)) {
-            return std::nullopt;
-        }
-
-        if (!storage.exists(b64Url)) {
-            std::optional<std::vector<uint8_t>> result = network.DownloadIcon(url);
-            if (!result.has_value()) {
-                logger->error("Failed to download icon");
-                storage.write(failFile, std::vector<uint8_t>{});
-                return std::nullopt;
-            }
-            storage.write(b64Url, result.value());
-            return (storage.path / std::filesystem::path(b64Url)).string();
-        } else {
-            return (storage.path / std::filesystem::path(b64Url)).string();
-        }
-    }
-
-    std::shared_ptr<GenericItem> Vault::GetItem(std::string uuid) {
-        return std::make_shared<GenericItem>(*this, uuid);
-    }
-        
-    std::shared_ptr<Folder> Vault::GetFolder(std::string uuid) {
-        return std::make_shared<Folder>(*this, uuid);
-    }
-        
-    std::shared_ptr<Folder> Vault::CreateFolder() {
-        return std::make_shared<Folder>(*this);
-    }
-        
-    std::shared_ptr<CipherQuery> Vault::GetCipherQuery() {
-        return std::make_shared<CipherQuery>(*this);
+        return LoginResult::Success;
     }
 
     /*
-     * Biometric Support
+     * Lock / unlock
     */
-    bool Vault::saveVaultKeysKeychain() {
-        keychain::Error e1;
-        keychain::Error e2;
+    UnlockResult Vault::UnlockWithMasterKey(Bytes masterKey) {
+        std::optional<std::string> protectedKey = store.ProtectedUserKey();
+        if (!protectedKey) {
+            return UnlockResult::Failed;
+        }
 
-        keychain::setPassword(CWbundleID, "internalKey", b64Encode(*session.internalKey), e1, bioDetail);
-        keychain::setPassword(CWbundleID, "masterPasswordHash", session.masterPasswordHash, e2, bioDetail);
-        
-        if (e1.type != keychain::ErrorType::NoError || e2.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to set SECURE keychain value");
+        Crypto::SymmetricKey userKey;
+        try {
+            userKey = Crypto::UnwrapKey(*protectedKey, Crypto::StretchMasterKey(masterKey));
+        } catch (const CryptoError&) {
+            return UnlockResult::InvalidPassword;
+        }
+
+        session.SetKeys(std::move(masterKey), std::move(userKey));
+        OnUnlocked();
+        return UnlockResult::Success;
+    }
+
+    void Vault::OnUnlocked() {
+        lastActivity = std::time(nullptr);
+        SetState(AuthState::Unlocked);
+        StartNotifications();
+        RequestSync();
+    }
+
+    UnlockResult Vault::Unlock(std::string_view password) {
+        if (State() != AuthState::Unlockable) {
+            return UnlockResult::Failed;
+        }
+        std::optional<Account> account = session.LoadAccount();
+        if (!account) {
+            return UnlockResult::Failed;
+        }
+
+        Bytes masterKey;
+        try {
+            masterKey = Crypto::DeriveMasterKey(password, account->email, account->kdf);
+        } catch (const CryptoError& e) {
+            Log()->error("Unlock failed: {}", e.what());
+            return UnlockResult::Failed;
+        }
+        return UnlockWithMasterKey(std::move(masterKey));
+    }
+
+    UnlockResult Vault::UnlockWithBiometrics() {
+        if (State() != AuthState::Unlockable) {
+            return UnlockResult::Failed;
+        }
+        std::optional<Bytes> masterKey = session.LoadBiometricKey();
+        if (!masterKey) {
+            return UnlockResult::Failed;
+        }
+        return UnlockWithMasterKey(std::move(*masterKey));
+    }
+
+    void Vault::Lock() {
+        if (State() != AuthState::Unlocked) {
+            return;
+        }
+        StopNotifications();
+        session.ClearKeys();
+        lastActivity = 0;
+        SetState(AuthState::Unlockable);
+    }
+
+    void Vault::Logout() {
+        StopNotifications();
+        std::lock_guard lock(lifecycleMutex);
+        ++epoch;
+        session.Forget();
+        store.Clear();
+        settings.Reset();
+        files->RemoveTree("icons");
+        files->Remove("cw.log");
+        {
+            std::lock_guard auth(authMutex);
+            pending.reset();
+        }
+        lastActivity = 0;
+        SetState(AuthState::LoggedOut);
+    }
+
+    bool Vault::VerifyMasterPassword(std::string_view password) {
+        std::optional<Account> account = session.LoadAccount();
+        if (!account || !session.HasKeys()) {
+            return false;
+        }
+        try {
+            return session.MasterKeyEquals(Crypto::DeriveMasterKey(password, account->email, account->kdf));
+        } catch (const CryptoError&) {
+            return false;
+        }
+    }
+
+    bool Vault::EnableBiometrics() {
+        return State() == AuthState::Unlocked && session.SaveBiometricKey();
+    }
+
+    bool Vault::DisableBiometrics() {
+        return session.RemoveBiometricKey();
+    }
+
+    bool Vault::BiometricsEnabled() {
+        return session.HasBiometricKey();
+    }
+
+    void Vault::NoteActivity(std::time_t when) {
+        if (State() == AuthState::Unlocked) {
+            lastActivity = when;
+        }
+    }
+
+    /*
+     * Sync
+    */
+    bool Vault::Sync() {
+        std::lock_guard serial(syncMutex);
+        uint64_t startEpoch;
+        {
+            std::lock_guard lock(lifecycleMutex);
+            startEpoch = epoch;
+        }
+
+        for (const auto& id : store.PendingFolderDeletes()) {
+            if (api.DeleteFolder(id)) store.ClearPendingFolderDelete(id);
+        }
+        for (const auto& id : store.PendingCipherDeletes()) {
+            if (api.DeleteCipher(id)) store.ClearPendingCipherDelete(id);
+        }
+
+        std::optional<nlohmann::json> remote = api.Sync();
+        if (!remote || !remote->is_object()) {
             return false;
         }
 
-        return true;
-    }
-
-    bool Vault::deleteVaultKeysKeychain() {
-        keychain::Error e1;
-        keychain::Error e2;
-
-        keychain::deletePassword(CWbundleID, "internalKey", e1);
-        keychain::deletePassword(CWbundleID, "masterPasswordHash", e2);
-        
-        if (e1.type != keychain::ErrorType::NoError || e2.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to delete SECURE keychain value");
-            return false;
-        }
-
-        return true;
-    }
-
-    bool Vault::checkVaultKeysKeychain() {
-        keychain::Error e1;
-        keychain::Error e2;
-
-        std::string internalKey = keychain::getPassword(CWbundleID, "internalKey", e1);
-        std::string masterPasswordHash = keychain::getPassword(CWbundleID, "masterPasswordHash", e2);
-
-        OPENSSL_cleanse(internalKey.data(), internalKey.size());
-        internalKey.clear();
-        OPENSSL_cleanse(masterPasswordHash.data(), masterPasswordHash.size());
-        masterPasswordHash.clear();
-
-        if (e1.type != keychain::ErrorType::NoError || e2.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to get SECURE keychain value");
-            return false;
-        }
-
-        return true;
-    }
-
-    bool Vault::getVaultKeysKeychain() {
-        keychain::Error e1;
-        keychain::Error e2;
-
-        *session.internalKey = std::move(b64Decode(keychain::getPassword(CWbundleID, "internalKey", e1)));
-        session.masterPasswordHash = keychain::getPassword(CWbundleID, "masterPasswordHash", e2);
-
-        if (e1.type != keychain::ErrorType::NoError || e2.type != keychain::ErrorType::NoError) {
-            logger->info("Failed to get SECURE keychain value");
-            return false;
-        }
-
-        return true;
-    }
-
-    bool Vault::createPasskey(std::string relyingPartyIdentifier, std::string userName, 
-        std::string userHandle, std::string clientDataHash, std::string& credentialId, 
-        std::string& attestationObject) {
         /*
-         * TODO: Implement createPasskey
+         * A different user key means the password or account changed on
+         * another device; everything cached here is now stale.
         */
+        std::optional<std::string> localKey = store.ProtectedUserKey();
+        auto profile = remote->find("profile");
+        if (localKey && profile != remote->end() && profile->is_object() && profile->value("key", "") != *localKey) {
+            Log()->warn("Account key changed remotely; logging out");
+            Post([this] { Logout(); });
+            return false;
+        }
+
+        VaultStore::Snapshot before = store.Take();
+        auto pendingFolders = store.PendingFolderDeletes();
+        auto pendingCiphers = store.PendingCipherDeletes();
+
+        MergeResult folders = Merge(before.folders, (*remote)["folders"], { pendingFolders.begin(), pendingFolders.end() });
+
+        std::unordered_map<std::string, std::string> folderIdRemap;
+        for (const auto& f : folders.toCreate) {
+            if (auto res = api.CreateFolder(f->value("name", ""))) {
+                folderIdRemap[IdOf(*f)] = IdOf(*res);
+                Replace(folders.merged, f, *res);
+            }
+        }
+        for (const auto& f : folders.toUpdate) {
+            if (auto res = api.UpdateFolder(IdOf(*f), f->value("name", ""))) {
+                Replace(folders.merged, f, *res);
+            }
+        }
+
+        /*
+         * Ciphers filed under a folder that was just uploaded need its new
+         * server-assigned id.
+        */
+        std::vector<Record> localCiphers = before.ciphers;
+        if (!folderIdRemap.empty()) {
+            for (auto& c : localCiphers) {
+                auto folder = c->find("folderId");
+                if (folder != c->end() && folder->is_string() && folderIdRemap.contains(folder->get<std::string>())) {
+                    nlohmann::json copy = *c;
+                    copy["folderId"] = folderIdRemap[folder->get<std::string>()];
+                    c = std::make_shared<const nlohmann::json>(std::move(copy));
+                }
+            }
+        }
+
+        MergeResult ciphers = Merge(localCiphers, (*remote)["ciphers"], { pendingCiphers.begin(), pendingCiphers.end() });
+        bool legacy = NeedsLegacyData();
+        for (const auto& c : ciphers.toCreate) {
+            if (auto res = api.CreateCipher(Item::WireFormat(*c, legacy))) {
+                Replace(ciphers.merged, c, *res);
+            }
+        }
+        for (const auto& c : ciphers.toUpdate) {
+            if (auto res = api.UpdateCipher(Item::WireFormat(*c, legacy))) {
+                Replace(ciphers.merged, c, *res);
+            }
+        }
+
+        std::lock_guard lock(lifecycleMutex);
+        if (epoch != startEpoch) {
+            return false;   // logged out while we were talking to the server
+        }
+        store.ApplySync(before, std::move(*remote), std::move(ciphers.merged), std::move(folders.merged));
         return true;
     }
 
-    bool Vault::getPasskey(std::string uuid, std::string& userHandle, std::string& signature, 
-        std::string& authenticatorData, std::string& credentialID) {
-        /*
-         * TODO: Implement getPasskey
-        */
+    void Vault::RequestSync() {
+        if (!syncQueued.exchange(true)) {
+            Post([this] {
+                syncQueued = false;
+                Sync();
+            });
+        }
+    }
+
+    /*
+     * Items
+    */
+    std::optional<Item> Vault::GetItem(const std::string& id) const {
+        Record record = store.Cipher(id);
+        if (!record) {
+            return std::nullopt;
+        }
+        return Item::FromJson(*record, UserKey());
+    }
+
+    Item Vault::NewItem(CipherType type) const {
+        return Item::Create(type, UserKey());
+    }
+
+    ItemQuery Vault::Query() const {
+        return ItemQuery(store.Ciphers(), UserKey());
+    }
+
+    bool Vault::Save(Item& item) {
+        UserKey();  // must be unlocked
+        item.Touch();
+
+        Record existing = store.Cipher(item.Id());
+        bool isNew = !existing || existing->value("createdOffline", false);
+
+        std::optional<nlohmann::json> res = isNew ? api.CreateCipher(item.ToWire(NeedsLegacyData())) : api.UpdateCipher(item.ToWire(NeedsLegacyData()));
+        if (res && IdOf(*res).size()) {
+            if (isNew && existing && IdOf(*res) != item.Id()) {
+                store.RemoveCipher(item.Id(), false);
+            }
+            item.Replace(std::move(*res));
+            store.PutCipher(item.Json());
+            return true;
+        }
+
+        nlohmann::json local = item.Json();
+        if (isNew) {
+            local["createdOffline"] = true;
+        }
+        item.Replace(local);
+        store.PutCipher(std::move(local));
+        return false;
+    }
+
+    bool Vault::Delete(const Item& item) {
+        Record existing = store.Cipher(item.Id());
+        if (!existing) {
+            return true;
+        }
+        if (existing->value("createdOffline", false)) {
+            store.RemoveCipher(item.Id(), false);
+            return true;
+        }
+        bool ok = api.DeleteCipher(item.Id());
+        store.RemoveCipher(item.Id(), !ok);
+        return ok;
+    }
+
+    bool Vault::CommitStatusChange(Item& item, bool ok) {
+        item.Touch();
+        store.PutCipher(item.Json());
+        if (ok) {
+            RequestSync();  // pick up the server's revision date
+        }
+        return ok;
+    }
+
+    bool Vault::MoveToBin(Item& item) {
+        item.MarkDeleted(true);
+        return CommitStatusChange(item, api.SoftDeleteCipher(item.Id()));
+    }
+
+    bool Vault::Restore(Item& item) {
+        item.MarkDeleted(false);
+        return CommitStatusChange(item, api.RestoreCipher(item.Id()));
+    }
+
+    bool Vault::Archive(Item& item) {
+        item.MarkArchived(true);
+        return CommitStatusChange(item, api.ArchiveCiphers({ item.Id() }));
+    }
+
+    bool Vault::Unarchive(Item& item) {
+        item.MarkArchived(false);
+        return CommitStatusChange(item, api.UnarchiveCiphers({ item.Id() }));
+    }
+
+    Item Vault::Duplicate(const Item& item) {
+        Item copy = item.Duplicate(UserKey());
+        Save(copy);
+        return copy;
+    }
+
+    std::optional<std::string> Vault::AddAttachment(Item& item, std::string_view fileName, std::span<const uint8_t> content,
+        std::function<void(float)> onProgress) {
+        Record existing = store.Cipher(item.Id());
+        if (!existing || existing->value("createdOffline", false)) {
+            throw VaultError("save the item online before adding attachments");
+        }
+
+        Crypto::SymmetricKey attachmentKey = Crypto::SymmetricKey::Generate();
+        std::string wrappedKey = Crypto::WrapKey(attachmentKey, item.Key());
+        std::string encryptedName = Crypto::Encrypt(fileName, item.Key());
+        std::vector<uint8_t> encrypted = Crypto::EncryptBuffer(content, attachmentKey);
+
+        auto res = api.UploadAttachment(item.Id(), encryptedName, wrappedKey, encrypted, std::move(onProgress));
+        if (!res) {
+            return std::nullopt;
+        }
+
+        if ((*res)["cipherResponse"].is_object()) {
+            item.Replace((*res)["cipherResponse"]);
+            store.PutCipher(item.Json());
+        }
+        return (*res)["attachmentId"].get<std::string>();
+    }
+
+    bool Vault::RemoveAttachment(Item& item, const std::string& attachmentId) {
+        if (!api.DeleteAttachment(item.Id(), attachmentId)) {
+            return false;
+        }
+
+        nlohmann::json updated = item.Json();
+        if (updated["attachments"].is_array()) {
+            auto& list = updated["attachments"];
+            list.erase(std::remove_if(list.begin(), list.end(), [&](const nlohmann::json& a) {
+                return a.is_object() && a.value("id", "") == attachmentId;
+            }), list.end());
+        }
+        item.Replace(std::move(updated));
+        store.PutCipher(item.Json());
         return true;
+    }
+
+    bool Vault::DownloadAttachment(const Item& item, const std::string& attachmentId, const std::filesystem::path& destination,
+        std::function<void(float)> onProgress) {
+        auto download = api.DownloadAttachment(item.Id(), attachmentId, std::move(onProgress));
+        if (!download) {
+            return false;
+        }
+
+        Crypto::SymmetricKey attachmentKey = Crypto::UnwrapKey(download->meta["key"].get<std::string>(), item.Key());
+        Bytes plaintext = Crypto::DecryptBuffer(download->content, attachmentKey);
+        files->Write(destination, std::span<const uint8_t>(plaintext.data(), plaintext.size()));
+        return true;
+    }
+
+    /*
+     * Folders
+    */
+    std::vector<FolderInfo> Vault::Folders() const {
+        Crypto::SymmetricKey key = UserKey();
+        std::vector<FolderInfo> out;
+        for (const auto& f : store.Folders()) {
+            try {
+                out.push_back({ IdOf(*f), Crypto::DecryptString(f->value("name", ""), key) });
+            } catch (const CryptoError&) {
+                Log()->warn("Skipping undecryptable folder");
+            }
+        }
+        return out;
+    }
+
+    std::optional<SecretString> Vault::FolderName(const std::string& id) const {
+        Record f = store.Folder(id);
+        if (!f) {
+            return std::nullopt;
+        }
+        return Crypto::DecryptString(f->value("name", ""), UserKey());
+    }
+
+    std::string Vault::CreateFolder(std::string_view name) {
+        std::string encrypted = Crypto::Encrypt(name, UserKey());
+        if (auto res = api.CreateFolder(encrypted)) {
+            store.PutFolder(*res);
+            return IdOf(*res);
+        }
+
+        std::string id = NewGuid();
+        store.PutFolder({ { "id", id }, { "name", encrypted }, { "object", "folder" }, { "revisionDate", NowTime() }, { "createdOffline", true } });
+        return id;
+    }
+
+    bool Vault::RenameFolder(const std::string& id, std::string_view name) {
+        Record existing = store.Folder(id);
+        if (!existing) {
+            return false;
+        }
+
+        nlohmann::json folder = *existing;
+        folder["name"] = Crypto::Encrypt(name, UserKey());
+        folder["revisionDate"] = NowTime();
+
+        if (!folder.value("createdOffline", false)) {
+            if (auto res = api.UpdateFolder(id, folder["name"])) {
+                store.PutFolder(*res);
+                return true;
+            }
+        }
+        store.PutFolder(std::move(folder));
+        return false;
+    }
+
+    bool Vault::DeleteFolder(const std::string& id) {
+        Record existing = store.Folder(id);
+        if (!existing) {
+            return true;
+        }
+
+        bool ok = existing->value("createdOffline", false) || api.DeleteFolder(id);
+        store.RemoveFolder(id, !ok);
+
+        /*
+         * The server moves a deleted folder's items to "no folder"; mirror
+         * that locally so they don't point at a missing folder.
+        */
+        for (const auto& c : store.Ciphers()) {
+            auto folder = c->find("folderId");
+            if (folder != c->end() && folder->is_string() && folder->get<std::string>() == id) {
+                nlohmann::json copy = *c;
+                copy["folderId"] = nullptr;
+                store.PutCipher(std::move(copy));
+            }
+        }
+        return ok;
+    }
+
+    /*
+     * Misc
+    */
+    std::string Vault::ProfileName() const {
+        nlohmann::json profile = store.Profile();
+        auto name = profile.find("name");
+        return name != profile.end() && name->is_string() ? name->get<std::string>() : std::string("Unknown");
+    }
+
+    bool Vault::ServerAtLeast(std::string_view version) const {
+        std::string current = store.ServerVersion();
+        return !current.empty() && CompareVersions(current, std::string(version)) >= 0;
+    }
+
+    std::optional<std::string> Vault::Icon(std::string_view url) {
+        std::optional<std::string> domain = HostName(url);
+        if (!domain) {
+            return std::nullopt;
+        }
+
+        /*
+         * Hash the domain for the cache filename so the cache never
+         * builds paths from (attacker-influenced) URL text.
+        */
+        Bytes digest = Botan::HashFunction::create_or_throw("SHA-256")->process(*domain);
+        std::string name = Botan::hex_encode(digest.data(), 16, false);
+        std::filesystem::path icon = std::filesystem::path("icons") / (name + ".png");
+        std::filesystem::path failed = std::filesystem::path("icons") / (name + ".failed");
+
+        if (files->Exists(icon)) {
+            return (files->Root() / icon).string();
+        }
+        if (files->Exists(failed) || !api.Online()) {
+            return std::nullopt;
+        }
+
+        std::optional<std::vector<uint8_t>> png = api.Icon(*domain);
+        if (!png) {
+            files->Write(failed, std::string_view());
+            return std::nullopt;
+        }
+        files->Write(icon, std::span<const uint8_t>(*png));
+        return (files->Root() / icon).string();
+    }
+
+    void Vault::CopyToClipboard(std::string_view text) {
+        clipboard.Copy(text, std::chrono::seconds(settings.ClipboardClearSeconds()));
+    }
+
+    /*
+     * Background work
+     *
+     * One worker thread runs posted tasks (sync, lock, logout requested
+     * from other threads) and a 1s housekeeping tick. The notification
+     * listener has its own thread because it blocks on the socket.
+    */
+    void Vault::Post(std::function<void()> task) {
+        {
+            std::lock_guard lock(taskMutex);
+            tasks.push_back(std::move(task));
+        }
+        taskCv.notify_one();
+    }
+
+    void Vault::BackgroundLoop(std::stop_token stop) {
+        auto nextTick = std::chrono::steady_clock::now() + Tick;
+
+        while (!stop.stop_requested()) {
+            std::function<void()> task;
+            {
+                std::unique_lock lock(taskMutex);
+                taskCv.wait_until(lock, stop, nextTick, [&] { return !tasks.empty(); });
+                if (stop.stop_requested()) {
+                    return;
+                }
+                if (!tasks.empty()) {
+                    task = std::move(tasks.front());
+                    tasks.pop_front();
+                }
+            }
+
+            try {
+                if (task) {
+                    task();
+                }
+                if (std::chrono::steady_clock::now() >= nextTick) {
+                    nextTick = std::chrono::steady_clock::now() + Tick;
+                    Housekeeping();
+                }
+            } catch (const std::exception& e) {
+                Log()->error("Background task failed: {}", e.what());
+            }
+        }
+    }
+
+    void Vault::Housekeeping() {
+        std::time_t now = std::time(nullptr);
+
+        if (State() == AuthState::Unlocked) {
+            std::time_t last = lastActivity.load();
+            if (last != 0 && now - last >= settings.AutoLockSeconds()) {
+                Log()->info("Auto-locking after inactivity");
+                Lock();
+                return;
+            }
+        }
+
+        if (State() == AuthState::Unlocked || State() == AuthState::Unlockable) {
+            if (!api.Online() && now - lastConnectivityCheck >= ConnectivityInterval) {
+                lastConnectivityCheck = now;
+                if (api.CheckAlive() && State() == AuthState::Unlocked) {
+                    RequestSync();
+                }
+            }
+
+            if (api.Online() && store.ServerVersion().empty()) {
+                if (auto config = api.Config(); config && (*config)["version"].is_string()) {
+                    store.SetServerVersion((*config)["version"].get<std::string>());
+                }
+            }
+        }
+    }
+
+    void Vault::StartNotifications() {
+        std::lock_guard lock(notificationMutex);
+        if (!notifications.joinable()) {
+            notifications = std::jthread([this](std::stop_token stop) { NotificationLoop(stop); });
+        }
+    }
+
+    void Vault::StopNotifications() {
+        std::jthread t;
+        {
+            std::lock_guard lock(notificationMutex);
+            t = std::move(notifications);
+        }
+        if (t.joinable()) {
+            t.request_stop();
+            t.join();
+        }
+    }
+
+    void Vault::NotificationLoop(std::stop_token stop) {
+        std::mutex m;
+        std::condition_variable_any cv;
+        auto backoff = std::chrono::seconds(1);
+
+        while (!stop.stop_requested()) {
+            std::optional<std::string> token = session.AccessToken();
+            bool connected = token && api.Transport().Listen(*token, [this](std::string_view frame) {
+                for (PushType type : ParseNotificationFrame(frame)) {
+                    switch (type) {
+                        case PushType::LogOut:
+                            Post([this] { Logout(); });
+                            break;
+                        case PushType::SyncOrgKeys:
+                        case PushType::SyncSettings:
+                            break;
+                        default:
+                            RequestSync();
+                            break;
+                    }
+                }
+            }, stop);
+
+            /*
+             * Reconnect with exponential backoff, capped at a minute.
+            */
+            backoff = connected ? std::chrono::seconds(1) : std::min(backoff * 2, std::chrono::seconds(60));
+            std::unique_lock lock(m);
+            cv.wait_for(lock, stop, backoff, [] { return false; });
+        }
     }
 }

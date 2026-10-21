@@ -1,192 +1,252 @@
 #pragma once
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/sinks/basic_file_sink.h>
-#include <keychain/keychain.h>
-#include "VaultCrypto/VaultCrypto.h"
-#include "VaultNetwork/VaultNetwork.h"
-#include "VaultSession/VaultSession.h"
-#include "VaultProfile/VaultProfile.h"
-#include "VaultFeatures/VaultFeatures.h"
-#include "Storage/Storage.h"
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <filesystem>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <vector>
 
-#include "Folder/Folder.h"
-#include "CipherQuery/CipherQuery.h"
-#include "GenericItem/GenericItemImpl.h"
-#include "VaultUtils/VaultUtils.h"
+#include "Clientwarden.h"
+#include "Auth/Session.h"
 #include "Clipboard/Clipboard.h"
-
-#define CWbundleID "com.ct5.clientwarden", "clientwarden"
+#include "Crypto/Crypto.h"
+#include "Crypto/PasswordGenerator.h"
+#include "Model/CipherSchema.h"
+#include "Model/Item.h"
+#include "Model/ItemQuery.h"
+#include "Net/BitwardenApi.h"
+#include "Net/Http.h"
+#include "Platform/FileStore.h"
+#include "Platform/SecretStore.h"
+#include "Settings/Settings.h"
+#include "Store/VaultStore.h"
 
 namespace ClientWarden {
-    enum class AuthState {
-        Unknown,
-        LoggedOut,
-        Unlockable,
-        WaitingForTOTP,
-        WaitingForDeviceVerif,
-        WaitingForPasskey,
-        Unlocked,
-        Failed // Vault should never reach this point
+    enum class LoginResult {
+        Success,
+        NeedsTotp,
+        NeedsDeviceVerification,
+        NeedsPasskey,
+        InvalidCredentials,
+        Offline,
+        Failed
+    };
+
+    enum class UnlockResult {
+        Success,
+        InvalidPassword,
+        Failed
+    };
+
+    struct PasskeyRequest {
+        std::string challenge;
+        std::string relyingParty;
+    };
+
+    struct FolderInfo {
+        std::string id;
+        SecretString name;
     };
 
     /*
-     * On Startup, the vault determines if
-     * the user has already logged in, or not
-     * and also initializes all member classes
-     * 
-     * TODO: For me to remember later
-     * I had a problem before where I would have
-     * to pass Vault to the Generic Item but since
-     * Vault was basically doing everything before
-     * I wasn't sure how to impl it, bc the best
-     * way would be to make a Generic Item would be
-     * from the Vault Itself.
-     * * So, what if I only pass the Vault Session,
-     * Vault Crypto and Vault Network to it *
-     * 
-     * 17-09-26 - So I ended up passing the individual
-     * shared ptrs to each one
+     * The vault facade the UI bridges talk to.
+     *
+     * Layering (each depends only on the ones below it):
+     *
+     *   Vault              orchestration, auth state machine, background work
+     *   Item / ItemQuery   decrypted view of ciphers (pure, no I/O)
+     *   VaultStore / Sync  local encrypted cache and merge rules
+     *   Session            tokens + keys
+     *   BitwardenApi       typed REST calls
+     *   HttpTransport, SecretStore, FileStore   platform seams (swappable in tests)
+     *   Crypto             Bitwarden crypto primitives
+     *
+     * All public methods are thread-safe. Methods that need keys throw
+     * VaultError while locked; network failures are reported through
+     * return values, not exceptions.
     */
     class Vault {
     public:
-        Vault();
+        struct Dependencies {
+            std::unique_ptr<SecretStore> secrets;
+            std::unique_ptr<FileStore> files;
+            std::unique_ptr<HttpTransport> transport;
+        };
+
+        explicit Vault(Dependencies deps);
         ~Vault();
 
+        Vault(const Vault&) = delete;
+        Vault& operator=(const Vault&) = delete;
+
+        /*
+         * Process-wide instance for the UI bridges, built with the real
+         * keychain, filesystem and network.
+        */
         static Vault& Instance();
         static void DestroyInstance();
 
         /*
-         * Core Vault - Lock and Unlock
+         * State
         */
-        bool Login(std::string& email, std::string& password);
-        bool Login(std::string code);
-        bool Login(std::string id, std::string authData, std::string clientData, std::string signature);
-
-        bool Unlock(std::string& password);
-        bool Unlock();
-        bool Lock();
-        bool Logout();
+        AuthState State() const { return state.load(); }
+        bool Online() const { return api.Online(); }
 
         /*
-         * Biometric Support
+         * Called on a background thread whenever the state changes, e.g.
+         * auto-lock (Unlockable) or a remote logout (LoggedOut).
         */
-        bool UnlockUsingKeys();
-
-        bool saveVaultKeysKeychain();
-        bool deleteVaultKeysKeychain();
-        bool checkVaultKeysKeychain();
-        bool getVaultKeysKeychain();
+        void OnStateChange(std::function<void(AuthState)> callback);
 
         /*
-         * Should be part of VaultSync
+         * Login
         */
-        bool Sync(bool fullSync = false);
-
-        void SetUris(std::string vaultUri, std::string mainUri, std::string apiUri, std::string iconUri, std::string wssUri);
-
-        bool checkReprompt(std::string password);
+        void SetServer(const ServerUrls& urls);
+        LoginResult Login(std::string_view email, std::string_view password);
+        LoginResult SubmitCode(std::string_view code);
 
         /*
-         * Should be part of VaultSettings
+         * WebAuthn two-factor. Pass the authenticator's raw bytes; they're
+         * base64url-encoded for the server here.
         */
-        void SetScreenshotOption(bool value);
-        bool GetScreenshotOption();
-        void SetAutoLockDelay(int value);
-        int GetAutoLockDelay();
+        std::optional<PasskeyRequest> PendingPasskey() const;
+        LoginResult SubmitPasskey(std::span<const uint8_t> credentialId, std::span<const uint8_t> authenticatorData,
+            std::span<const uint8_t> clientDataJson, std::span<const uint8_t> signature);
 
         /*
-         * Compares current Vault Key and New
-         * Vault Key.
-         * 
-         * If both vault keys don't match, then
-         * logout.
-         * 
-         * Should be a part of VaultSession
+         * Lock / unlock
         */
-        bool checkVaultValidity();
+        UnlockResult Unlock(std::string_view password);
+        UnlockResult UnlockWithBiometrics();
+        void Lock();
+        void Logout();
 
-        template <typename Derived>
-        std::shared_ptr<Derived> GetItem(std::string uuid) {
-            return std::make_shared<Derived>(*this, uuid);
-        }
-
-        template <typename Derived>
-        std::shared_ptr<Derived> CreateItem() {
-            return std::make_shared<Derived>(*this);
-        }
-        
-        std::shared_ptr<GenericItem> GetItem(std::string uuid);
-        std::shared_ptr<Folder> GetFolder(std::string uuid);
-        std::shared_ptr<Folder> CreateFolder();
-        std::vector<std::string> GetFolders();
-        std::shared_ptr<CipherQuery> GetCipherQuery();
+        bool VerifyMasterPassword(std::string_view password);
+        bool EnableBiometrics();
+        bool DisableBiometrics();
+        bool BiometricsEnabled();
 
         /*
-         * Auto Fill Stuff
-         *
-         * Should be in VaultAutoFill
+         * Reports user activity for auto-lock.
         */
-        bool createPasskey(std::string relyingPartyIdentifier, std::string userName, std::string userHandle, std::string clientDataHash, 
-            std::string& credentialId, std::string& attestationObject);
-        bool getPasskey(std::string uuid, std::string& userHandle, std::string& signature, std::string& authenticatorData, std::string& credentialID);
+        void NoteActivity(std::time_t when = std::time(nullptr));
 
         /*
-         * Uses Vault Crypto and Vault Network.
-         * Aims to put crypto and networking stuff in the
-         * Vault.
-         * 
-         * Should be part of Vault Orchestrator
+         * Items. Save/Delete/... return true once the server has the
+         * change; on false it's queued locally and retried on next sync.
         */
-        std::optional<nlohmann::json> NewItem(nlohmann::json encryptedData, bool performVaultOps = false, nlohmann::json vaultOpsData = nlohmann::json());
-        bool UpdateItem(nlohmann::json encryptedData);
-        bool DeleteItem(std::string uuid, bool performVaultOps = false, nlohmann::json vaultOpsData = nlohmann::json());
-        bool SoftDeleteItem(std::string uuid);
-        bool RestoreItem(std::string uuid);
-        bool ArchiveItem(std::string uuid);
-        bool UnArchiveItem(std::string uuid);
-        std::optional<nlohmann::json> AddAttachment(std::string uuid, std::string& decryptedFileContents, std::string& decryptedFileName, 
+        bool Sync();
+        std::optional<Item> GetItem(const std::string& id) const;
+        Item NewItem(CipherType type) const;
+        ItemQuery Query() const;
+
+        bool Save(Item& item);
+        bool Delete(const Item& item);
+        bool MoveToBin(Item& item);
+        bool Restore(Item& item);
+        bool Archive(Item& item);
+        bool Unarchive(Item& item);
+        Item Duplicate(const Item& item);
+
+        std::optional<std::string> AddAttachment(Item& item, std::string_view fileName, std::span<const uint8_t> content,
             std::function<void(float)> onProgress = nullptr);
-        bool RemoveAttachment(std::string uuid, std::string attachmentID);
-        bool DownloadAttachment(std::string uuid, std::string attachmentID, std::filesystem::path savePath,
-            Botan::secure_vector<uint8_t> cipEnc, Botan::secure_vector<uint8_t> cipMac, std::function<void(float)> onProgress = nullptr);
-        std::optional<nlohmann::json> CreateFolder(std::string encryptedFolderName);
-        bool RenameFolder(std::string folderUUID, std::string encryptedFolderName);
-        bool DeleteFolder(std::string folderUUID);
-        std::optional<std::string> DownloadIcon(std::string url);
-
-        std::recursive_mutex inactivityTimerMutex;
-        std::optional<time_t> inactivityTimer;
+        bool RemoveAttachment(Item& item, const std::string& attachmentId);
+        bool DownloadAttachment(const Item& item, const std::string& attachmentId, const std::filesystem::path& destination,
+            std::function<void(float)> onProgress = nullptr);
 
         /*
-         * Should be in Vault Settings protected by a func
+         * Folders
         */
-        keychain::SecurityDetail bioDetail = keychain::SecurityDetail::Secure;
+        std::vector<FolderInfo> Folders() const;
+        std::optional<SecretString> FolderName(const std::string& id) const;
+        std::string CreateFolder(std::string_view name);
+        bool RenameFolder(const std::string& id, std::string_view name);
+        bool DeleteFolder(const std::string& id);
 
         /*
-         * Should be private and only accessable by a func
+         * Misc
         */
-        VaultSession session;
-        VaultCrypto crypto;
-        VaultNetwork network;
-        VaultProfile profile;
-        VaultFeatures features;
-        AuthState state;
-        Storage storage;
-        Clipboard clipboard;
+        std::string ProfileName() const;
 
         /*
-         * DOCS: Should be private and only accessable by a func
-         *
-         * This is populated by the Login Passkey Funcs and then
-         * used by the UI Bridge
+         * True once the server is known to run at least this version
+         * (e.g. "2026.8.1" added bank account, passport and licence items).
         */
-        std::string passkeyChallenge;
+        bool ServerAtLeast(std::string_view version) const;
+        std::optional<std::string> Icon(std::string_view url);
+        void CopyToClipboard(std::string_view text);
+
+        Settings& Preferences() { return settings; }
+        Clipboard& SystemClipboard() { return clipboard; }
+        const PasswordGenerator& Generator() const { return generator; }
 
     private:
-        bool pLogin(std::optional<nlohmann::json> token);
-        bool pUnlock();
+        struct PendingLogin {
+            std::string email;
+            Crypto::KdfParams kdf;
+            Bytes masterKey;
+            std::string passwordHash;
+            std::optional<PasskeyRequest> passkey;
+        };
 
-        static Vault* inst;
+        void SetState(AuthState next);
+        Crypto::SymmetricKey UserKey() const;
+        bool NeedsLegacyData() const;
+
+        LoginResult HandleToken(const TokenResponse& token);
+        LoginResult CompleteLogin(const TokenResponse& token);
+        UnlockResult UnlockWithMasterKey(Bytes masterKey);
+        void OnUnlocked();
+
+        void Post(std::function<void()> task);
+        void RequestSync();
+        void BackgroundLoop(std::stop_token stop);
+        void NotificationLoop(std::stop_token stop);
+        void StartNotifications();
+        void StopNotifications();
+        void Housekeeping();
+
+        bool CommitStatusChange(Item& item, bool ok);
+
+        std::unique_ptr<SecretStore> secrets;
+        std::unique_ptr<FileStore> files;
+        std::unique_ptr<HttpTransport> transport;
+
+        BitwardenApi api;
+        Session session;
+        VaultStore store;
+        Settings settings;
+        Clipboard clipboard;
+        PasswordGenerator generator;
+
+        std::atomic<AuthState> state { AuthState::Unknown };
+        std::mutex observerMutex;
+        std::function<void(AuthState)> observer;
+
+        mutable std::mutex authMutex;
+        std::optional<PendingLogin> pending;
+        std::optional<ServerUrls> pendingUrls;
+
+        std::mutex syncMutex;
+        std::mutex lifecycleMutex;      // orders a sync's final commit against Logout
+        uint64_t epoch = 0;             // bumped by Logout; guarded by lifecycleMutex
+        std::atomic<bool> syncQueued { false };
+        std::atomic<std::time_t> lastActivity { 0 };
+        std::time_t lastConnectivityCheck = 0;
+
+        std::mutex taskMutex;
+        std::condition_variable_any taskCv;
+        std::deque<std::function<void()>> tasks;
+
+        std::mutex notificationMutex;
+        std::jthread notifications;
+        std::jthread worker;
     };
 }

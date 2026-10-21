@@ -68,28 +68,24 @@ if (WIN32)
 endif()
 
 set(FILES
-    src/Vault/CipherQuery/CipherQuery.cpp
-    src/Vault/CWThread/CWThread.cpp
-    src/Vault/Folder/Folder.cpp
-    src/Vault/PasswordGenerator/PasswordGenerator.cpp
-
-    src/Vault/GenericItem/GenericItem.cpp
-    src/Vault/LoginItem/LoginItem.cpp
-    src/Vault/CardItem/CardItem.cpp
-    src/Vault/IdentityItem/IdentityItem.cpp
-    src/Vault/NoteItem/NoteItem.cpp
-    src/Vault/SSHKeyItem/SSHKeyItem.cpp
-    src/Vault/BankAccountItem/BankAccountItem.cpp
-    src/Vault/DriversLicenseItem/DriversLicenseItem.cpp
-    src/Vault/PassportItem/PassportItem.cpp
-
-    src/Vault/VaultCrypto/VaultCrypto.cpp
-    src/Vault/VaultNetwork/VaultNetwork.cpp
-    src/Vault/VaultProfile/VaultProfile.cpp
-    src/Vault/VaultSession/VaultSession.cpp
-    src/Vault/VaultFeatures/VaultFeatures.cpp
-    src/Vault/VaultUtils/VaultUtils.cpp
+    src/Vault/Auth/Session.cpp
+    src/Vault/Crypto/Crypto.cpp
+    src/Vault/Crypto/PasswordGenerator.cpp
+    src/Vault/Model/CipherSchema.cpp
+    src/Vault/Model/Item.cpp
+    src/Vault/Model/ItemQuery.cpp
+    src/Vault/Net/BitwardenApi.cpp
+    src/Vault/Net/Http.cpp
+    src/Vault/Net/HttplibTransport.cpp
+    src/Vault/Net/Notifications.cpp
+    src/Vault/Platform/FileStore.cpp
+    src/Vault/Platform/SecretStore.cpp
+    src/Vault/Settings/Settings.cpp
+    src/Vault/Store/VaultStore.cpp
+    src/Vault/Sync/SyncEngine.cpp
+    src/Vault/Util/Util.cpp
     src/Vault/Vault.cpp
+    src/Vault/VaultInstance.cpp
 )
 
 if (WIN32)
@@ -106,7 +102,7 @@ else()
 endif()
 
 target_link_libraries(clientwarden PRIVATE OpenSSL::Crypto OpenSSL::SSL spdlog::spdlog Boost::boost Boost::url httplib::httplib nlohmann_json::nlohmann_json botan::botan msgpack-cxx keychain)
-target_compile_definitions(clientwarden PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+target_compile_definitions(clientwarden PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT MSGPACK_DISABLE_LEGACY_NIL)
 
 target_include_directories(clientwarden PRIVATE src/Vault src/Platforms/)
 
