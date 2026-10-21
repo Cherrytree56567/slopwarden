@@ -86,6 +86,27 @@ namespace clientwarden {
             request.m_path = std::move(path);
             return request;
         }
+
+        /*
+         * Both Send access calls: the token flow puts the Send in the bearer token, the legacy
+         * flow puts it in the path and the password in the body.
+         */
+        HttpRequest sendAccessRequest_(
+                SecureString path, std::string_view password_hash, std::string_view access_token) {
+            HttpRequest request;
+            request.m_method = HttpMethod::Post;
+            request.m_path = std::move(path);
+            Json body = Json::object();
+            if (!access_token.empty()) {
+                request.m_headers.emplace_back(
+                        "Authorization", SecureString("Bearer ") + SecureString(access_token));
+            } else if (!password_hash.empty()) {
+                body["password"] = SecureString(password_hash);
+            }
+            request.m_body = body.dump();
+            request.m_content_type = "application/json";
+            return request;
+        }
     }
 
     DeviceInfo DeviceInfo::forThisPlatform(SecureString identifier) {
@@ -595,33 +616,44 @@ namespace clientwarden {
         return call_(HttpMethod::Delete, Host::Vault, std::move(path), std::nullopt).ok();
     }
 
-    HttpResponse Network::accessSend(
+    HttpResponse Network::sendAccessToken(
             std::string_view origin, std::string_view access_id, std::string_view password_hash) {
-        Json body = Json::object();
+        // clang-format off
+        std::vector<std::pair<SecureString, SecureString>> form = {
+            { "grant_type", "send_access" },
+            { "client_id", "send" },
+            { "scope", "api.send.access" },
+            { "send_id", SecureString(access_id) }
+        };
+        // clang-format on
         if (!password_hash.empty()) {
-            body["password"] = SecureString(password_hash);
+            form.emplace_back("password_hash_b64", SecureString(password_hash));
         }
         HttpRequest request;
         request.m_method = HttpMethod::Post;
-        request.m_path = SecureString(origin) + "/api/sends/access/" + segment_(access_id);
-        request.m_body = body.dump();
-        request.m_content_type = "application/json";
+        request.m_path = SecureString(origin) + "/identity/connect/token";
+        request.m_body = encoding::formEncode(form);
+        request.m_content_type = "application/x-www-form-urlencoded; charset=utf-8";
         return send_(std::move(request), false);
+    }
+
+    HttpResponse Network::accessSend(std::string_view origin, std::string_view access_id,
+            std::string_view password_hash, std::string_view access_token) {
+        SecureString path = access_token.empty() ? SecureString(origin) + "/api/sends/access/" +
+                                                           segment_(access_id)
+                                                 : SecureString(origin) + "/api/sends/access";
+        return send_(sendAccessRequest_(std::move(path), password_hash, access_token), false);
     }
 
     std::optional<SecureBytes> Network::accessSendFile(std::string_view origin,
             std::string_view send_id, std::string_view file_id, std::string_view password_hash,
-            std::function<void(float)> on_progress) {
-        Json body = Json::object();
-        if (!password_hash.empty()) {
-            body["password"] = SecureString(password_hash);
-        }
-        HttpRequest request;
-        request.m_method = HttpMethod::Post;
-        request.m_path = SecureString(origin) + "/api/sends/" + segment_(send_id) +
-                         "/access/file/" + segment_(file_id);
-        request.m_body = body.dump();
-        request.m_content_type = "application/json";
+            std::string_view access_token, std::function<void(float)> on_progress) {
+        SecureString path =
+                access_token.empty()
+                        ? SecureString(origin) + "/api/sends/" + segment_(send_id) +
+                                  "/access/file/" + segment_(file_id)
+                        : SecureString(origin) + "/api/sends/access/file/" + segment_(file_id);
+        HttpRequest request = sendAccessRequest_(std::move(path), password_hash, access_token);
         std::optional<Json> meta = jsonOf_(send_(std::move(request), false), "AccessSendFile");
         SecureString url = meta ? stringAt(*meta, "url") : SecureString();
         if (!url.starts_with("https://") && !url.starts_with("http://")) {

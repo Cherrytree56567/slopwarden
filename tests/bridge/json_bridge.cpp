@@ -110,7 +110,8 @@ TEST_CASE("Bridge: every item type works by field key") {
             fields[field["key"].get<SecureString>()] = SecureString("v-") + field["key"].get<SecureString>();
         }
         SecureString id = f.ok("items.save", { { "type", type["type"] }, { "name", "x" }, { "fields", fields } })["id"].get<SecureString>();
-        for (const Json& field : f.ok("items.get", { { "id", id } })["fields"]) {
+        Json item = f.ok("items.get", { { "id", id } });
+        for (const Json& field : item["fields"]) {
             REQUIRE(field["value"] == SecureString("v-") + field["key"].get<SecureString>());
         }
     }

@@ -36,7 +36,7 @@ TEST_CASE("Schema legacy data blob mirrors the encrypted fields") {
     login->setPassword("pw2");
 
     Json stored = login->getJson();
-    Json wire = Schema::wireFormat(stored, true);
+    Json wire = Schema::wireFormat(stored, true, "");
     Json data = Json::parse(wire["data"].get<SecureString>());
 
     REQUIRE(data["Name"] == stored["name"]);
@@ -52,21 +52,21 @@ TEST_CASE("Schema legacy data blob mirrors the encrypted fields") {
     REQUIRE(data["Fields"][0]["Value"] == stored["fields"][0]["value"]);
     REQUIRE(data["Fields"][1]["LinkedId"] == 5);
 
-    REQUIRE_FALSE(Schema::wireFormat(stored, false).contains("data"));
+    REQUIRE_FALSE(Schema::wireFormat(stored, false, "").contains("data"));
 
     std::shared_ptr<IdentityItem> identity = ItemFixture::create<IdentityItem>();
     identity->setSsn("123");
-    REQUIRE(Json::parse(Schema::wireFormat(identity->getJson(), true)["data"].get<SecureString>()).contains("SSN"));
+    REQUIRE(Json::parse(Schema::wireFormat(identity->getJson(), true, "")["data"].get<SecureString>()).contains("SSN"));
 
     std::shared_ptr<NoteItem> note = ItemFixture::create<NoteItem>();
-    REQUIRE(Json::parse(Schema::wireFormat(note->getJson(), true)["data"].get<SecureString>())["Type"] == 0);
+    REQUIRE(Json::parse(Schema::wireFormat(note->getJson(), true, "")["data"].get<SecureString>())["Type"] == 0);
 }
 
 TEST_CASE("Schema wire format strips local-only markers") {
     std::shared_ptr<CardItem> card = ItemFixture::create<CardItem>();
     Json json = card->getJson();
     json["createdOffline"] = true;
-    REQUIRE_FALSE(Schema::wireFormat(json, false).contains("createdOffline"));
+    REQUIRE_FALSE(Schema::wireFormat(json, false, "").contains("createdOffline"));
 }
 
 TEST_CASE("Fields are found by key and secrets are flagged") {

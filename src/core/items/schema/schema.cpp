@@ -165,9 +165,13 @@ namespace clientwarden {
         return out;
     }
 
-    Json Schema::wireFormat(const Json& cipher, bool include_legacy_data) {
+    Json Schema::wireFormat(
+            const Json& cipher, bool include_legacy_data, std::string_view encrypted_for) {
         Json wire = cipher;
         wire.erase("createdOffline");
+        if (!encrypted_for.empty()) {
+            wire["encryptedFor"] = SecureString(encrypted_for);
+        }
         if (include_legacy_data) {
             wire["data"] = legacyData_(cipher).dump();
         } else {

@@ -50,6 +50,39 @@ namespace {
             return false;
         }
     };
+
+    /**
+     * @brief A server whose /api/sync response has no folders, and which runs a hook after
+     * building it (the moment another request lands while the sync is in flight).
+     */
+    class SlowSync : public HttpTransport {
+    public:
+        std::function<void()> m_during_sync;
+
+        void configure(ServerUrls) override {}
+        HttpResponse send(HttpRequest request) override {
+            HttpResponse response;
+            response.m_status = 200;
+            if (request.m_path == "/api/sync") {
+                Json body = { { "profile", { { "id", "user-1" } } }, { "folders", Json::array() }, { "ciphers", Json::array() } };
+                if (m_during_sync) {
+                    m_during_sync();
+                }
+                SecureString text = body.dump();
+                response.m_body = SecureBytes(text.begin(), text.end());
+            }
+            return response;
+        }
+        bool listen(std::string_view, std::function<void(std::span<const uint8_t>)>, std::stop_token) override {
+            return false;
+        }
+    };
+
+    class FixedToken : public AccessTokenSource {
+    public:
+        std::optional<SecureString> getAccessToken() override { return SecureString("t"); }
+        bool refresh(std::string_view) override { return false; }
+    };
 }
 
 TEST_CASE("Sync::merge rules") {
@@ -102,4 +135,21 @@ TEST_CASE("Sync::run fails cleanly without a server and leaves the cache alone")
     REQUIRE_FALSE(sync.run());
     REQUIRE(store->getCipher("c1"));
     REQUIRE_FALSE(called);
+}
+
+TEST_CASE("Sync::run keeps records saved while its request was in flight") {
+    std::shared_ptr<Store> store = std::make_shared<Store>(std::make_shared<MemoryFileStore>());
+    std::shared_ptr<SlowSync> transport = std::make_shared<SlowSync>();
+    std::shared_ptr<Network> network = std::make_shared<Network>(transport, DeviceInfo::forThisPlatform("dev"));
+    network->setTokenSource(std::make_shared<FixedToken>());
+    Sync sync(network, store, std::make_shared<Features>(store));
+
+    /*
+     * Saved online after the server built its response, so the response doesn't have it.
+    */
+    transport->m_during_sync = [&store]() {
+        store->putFolder(Json { { "id", "f-new" }, { "revisionDate", SecureString(c_new) } });
+    };
+    REQUIRE(sync.run());
+    REQUIRE(store->getFolder("f-new"));
 }

@@ -362,16 +362,32 @@ namespace clientwarden {
         bool deleteSend(std::string_view id);
 
         /**
-         * @brief Opens someone's Send. Unauthenticated, and sent to the link's own server.
+         * @brief Asks the link's server for a short-lived token to open a Send (the
+         * "send_access" grant newer servers use instead of sending the password with the
+         * request).
          *
          * @param origin The Send server, e.g. https://vault.bitwarden.com
          * @param access_id From the link
          * @param password_hash From Send password protection, or empty
+         * @return {status, body}: 200 with access_token; 400 with send_access_error_type
+         * password_hash_b64_required/_invalid; other 4xx if the server lacks the grant or the
+         * Send is gone; status 0 if unreachable
+         */
+        HttpResponse sendAccessToken(std::string_view origin, std::string_view access_id,
+                std::string_view password_hash);
+
+        /**
+         * @brief Opens someone's Send. Unauthenticated, and sent to the link's own server.
+         *
+         * @param origin The Send server, e.g. https://vault.bitwarden.com
+         * @param access_id From the link
+         * @param password_hash From Send password protection, or empty (legacy flow only)
+         * @param access_token From sendAccessToken, or empty for the legacy flow
          * @return {status, body}: 200 with the encrypted Send, 401 if a password is needed or
          * wrong, 404 if gone; status 0 if unreachable
          */
         HttpResponse accessSend(std::string_view origin, std::string_view access_id,
-                std::string_view password_hash);
+                std::string_view password_hash, std::string_view access_token);
 
         /**
          * @brief Downloads the (encrypted) file of someone's file Send.
@@ -380,12 +396,13 @@ namespace clientwarden {
          * @param send_id The Send id (from accessSend)
          * @param file_id The file id (from accessSend)
          * @param password_hash As for accessSend
+         * @param access_token As for accessSend
          * @param on_progress Download progress, may be null
          * @return The encrypted file, or nullopt
          */
         std::optional<SecureBytes> accessSendFile(std::string_view origin, std::string_view send_id,
                 std::string_view file_id, std::string_view password_hash,
-                std::function<void(float)> on_progress);
+                std::string_view access_token, std::function<void(float)> on_progress);
 
         /**
          * @brief Uploads an attachment (prepare, then upload the body).

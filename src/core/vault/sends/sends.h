@@ -166,6 +166,8 @@ namespace clientwarden {
 
     private:
         std::shared_ptr<Send> wrap_(Json send);
+        std::optional<ReceiveResult> accessToken_(
+                const SendLink& link, std::string_view password_hash, SecureString& token);
 
         std::shared_ptr<Crypto> m_crypto_;
         std::shared_ptr<Network> m_network_;

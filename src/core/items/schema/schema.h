@@ -211,9 +211,12 @@ namespace clientwarden {
          *
          * @param cipher The stored cipher
          * @param include_legacy_data Add the "data" blob older servers expect
+         * @param encrypted_for The id of the user whose key encrypted it (Vaultwarden requires
+         * it; empty to leave it out)
          * @return The request body
          */
-        static Json wireFormat(const Json& cipher, bool include_legacy_data);
+        static Json wireFormat(
+                const Json& cipher, bool include_legacy_data, std::string_view encrypted_for);
 
         /**
          * @brief The type recorded in a cipher.

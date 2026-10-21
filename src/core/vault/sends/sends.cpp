@@ -223,6 +223,46 @@ namespace clientwarden {
         return SendLink { apiOrigin_(origin), SecureString(access_id), std::move(material) };
     }
 
+    /**
+     * @brief Gets a Send access token from servers with the "send_access" grant.
+     *
+     * @param link The parsed link
+     * @param password_hash The password hash, or empty
+     * @param token Set to the token, or left empty to use the legacy flow
+     * @return The final result when the server answered for the Send itself (password needed
+     * or wrong, unreachable), otherwise nullopt to carry on
+     */
+    std::optional<ReceiveResult> Sends::accessToken_(
+            const SendLink& link, std::string_view password_hash, SecureString& token) {
+        HttpResponse response =
+                m_network_->sendAccessToken(link.m_origin, link.m_access_id, password_hash);
+        if (!response.reached()) {
+            return ReceiveResult::Offline;
+        }
+        std::optional<Json> json = response.json();
+        if (!json || !json->is_object()) {
+            return std::nullopt;
+        }
+        if (response.ok()) {
+            token = stringAt(*json, "access_token");
+            return std::nullopt;
+        }
+        SecureString error = stringAt(*json, "send_access_error_type");
+        if (error == "password_hash_b64_required") {
+            return ReceiveResult::NeedsPassword;
+        }
+        if (error == "password_hash_b64_invalid") {
+            return ReceiveResult::WrongPassword;
+        }
+        if (!error.empty()) {
+            return ReceiveResult::NotAvailable; // send_id_invalid: deleted, expired or used up
+        }
+        /*
+         * No such grant: an older server, which takes the legacy call.
+         */
+        return std::nullopt;
+    }
+
     ReceiveResult Sends::open(
             std::string_view link, std::string_view password, ReceivedSend& received) {
         std::optional<SendLink> parsed = parseLink(link);
@@ -233,8 +273,13 @@ namespace clientwarden {
         SecureString password_hash =
                 password.empty() ? SecureString()
                                  : Send::hashPassword(*m_crypto_, password, parsed->m_key_material);
+        SecureString token;
+        std::optional<ReceiveResult> refused = accessToken_(*parsed, password_hash, token);
+        if (refused) {
+            return *refused;
+        }
         HttpResponse response =
-                m_network_->accessSend(parsed->m_origin, parsed->m_access_id, password_hash);
+                m_network_->accessSend(parsed->m_origin, parsed->m_access_id, password_hash, token);
         if (!response.reached()) {
             return ReceiveResult::Offline;
         }
@@ -286,9 +331,16 @@ namespace clientwarden {
         if (received.m_type != SendType::File) {
             throw VaultError("not a file Send");
         }
-        std::optional<SecureBytes> encrypted =
-                m_network_->accessSendFile(received.m_link.m_origin, received.m_id,
-                        received.m_file_id, received.m_password_hash, std::move(on_progress));
+        /*
+         * Access tokens last minutes, so the download gets its own.
+         */
+        SecureString token;
+        if (accessToken_(received.m_link, received.m_password_hash, token)) {
+            return false;
+        }
+        std::optional<SecureBytes> encrypted = m_network_->accessSendFile(received.m_link.m_origin,
+                received.m_id, received.m_file_id, received.m_password_hash, token,
+                std::move(on_progress));
         if (!encrypted) {
             return false;
         }

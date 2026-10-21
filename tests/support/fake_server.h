@@ -132,6 +132,7 @@ namespace clientwarden::testing {
 
         std::map<SecureString, Json> m_sends;
         std::map<SecureString, SecureBytes> m_send_files;
+        bool m_send_token_flow = false; // true: like newer Vaultwarden, only the send_access grant
 
         std::mutex m_mutex;
         std::vector<HttpRequest> m_requests;
@@ -306,6 +307,9 @@ namespace clientwarden::testing {
                 return response;
             }
 
+            if (path == "https://vault.example/identity/connect/token") {
+                return sendToken_(parseForm(request.m_body));
+            }
             if (path.starts_with("https://vault.example/api/sends/")) {
                 return sendAccess_(request);    // anonymous, via the link's origin
             }
@@ -539,32 +543,94 @@ namespace clientwarden::testing {
         /**
          * @brief Anonymous recipients opening a Send (POST access, then the file).
          */
+        /**
+         * @brief The Send with an access id, or nullptr.
+         */
+        Json* sendByAccessId_(std::string_view access_id, SecureString& id) {
+            for (std::pair<const SecureString, Json>& entry : m_sends) {
+                if (stringAt(entry.second, "accessId") == access_id) {
+                    id = entry.first;
+                    return &entry.second;
+                }
+            }
+            return nullptr;
+        }
+
+        /**
+         * @brief Whether a Send can still be opened.
+         */
+        static bool sendOpen_(const Json& send) {
+            const Json& max = at(send, "maxAccessCount");
+            bool used_up = max.is_number_integer() && at(send, "accessCount").get<int>() >= max.get<int>();
+            return at(send, "disabled") != true && !used_up;
+        }
+
+        /**
+         * @brief The send_access grant: a token for one Send, after checking its password.
+         */
+        HttpResponse sendToken_(std::map<SecureString, SecureString> form) {
+            if (!m_send_token_flow || form["grant_type"] != "send_access") {
+                return respond_(400, { { "error", "unsupported_grant_type" } });
+            }
+            SecureString id;
+            Json* send = sendByAccessId_(form["send_id"], id);
+            if (!send || !sendOpen_(*send)) {
+                return respond_(400, { { "error", "invalid_grant" }, { "send_access_error_type", "send_id_invalid" } });
+            }
+            if (at(*send, "password").is_string()) {
+                if (!form.contains("password_hash_b64")) {
+                    return respond_(400, { { "error", "invalid_request" }, { "send_access_error_type", "password_hash_b64_required" } });
+                }
+                if (form["password_hash_b64"] != stringAt(*send, "password")) {
+                    return respond_(400, { { "error", "invalid_grant" }, { "send_access_error_type", "password_hash_b64_invalid" } });
+                }
+            }
+            return respond_(200, { { "access_token", SecureString("send-token-") + id }, { "expires_in", 120 },
+                { "token_type", "Bearer" }, { "scope", "api.send.access" } });
+        }
+
+        HttpResponse sendContent_(SecureString id, Json& send) {
+            send["accessCount"] = send["accessCount"].get<int>() + 1;
+            return respond_(200, { { "id", id }, { "type", send["type"] }, { "name", send["name"] },
+                { "text", at(send, "text") }, { "file", at(send, "file") },
+                { "expirationDate", at(send, "expirationDate") },
+                { "creatorIdentifier", at(send, "hideEmail") == true ? Json() : Json(m_email) } });
+        }
+
+        /**
+         * @brief Anonymous recipients opening a Send (POST access, then the file), by either the
+         * token flow or the legacy one with the password in the body.
+         */
         HttpResponse sendAccess_(HttpRequest request) {
             SecureString rest = request.m_path.substr(SecureString("https://vault.example/api/sends/").size());
             Json body = Json::parse(request.m_body, nullptr, false);
 
-            if (rest.starts_with("access/")) {
-                SecureString access_id = rest.substr(7);
-                for (std::pair<const SecureString, Json>& entry : m_sends) {
-                    Json& send = entry.second;
-                    if (stringAt(send, "accessId") != access_id) {
-                        continue;
-                    }
-                    const Json& max = at(send, "maxAccessCount");
-                    bool used_up = max.is_number_integer() && send["accessCount"].get<int>() >= max.get<int>();
-                    if (at(send, "disabled") == true || used_up) {
-                        return respond_(404, Json());
-                    }
-                    if (at(send, "password").is_string() && stringAt(body, "password") != stringAt(send, "password")) {
-                        return respond_(401, Json());
-                    }
-                    send["accessCount"] = send["accessCount"].get<int>() + 1;
-                    return respond_(200, { { "id", entry.first }, { "type", send["type"] }, { "name", send["name"] },
-                        { "text", at(send, "text") }, { "file", at(send, "file") },
-                        { "expirationDate", at(send, "expirationDate") },
-                        { "creatorIdentifier", at(send, "hideEmail") == true ? Json() : Json(m_email) } });
+            if (m_send_token_flow) {
+                SecureString bearer = headerOf(request, "Authorization");
+                SecureString prefix = "Bearer send-token-";
+                SecureString id = bearer.starts_with(prefix) ? bearer.substr(prefix.size()) : SecureString();
+                if (!m_sends.contains(id)) {
+                    return respond_(bearer.empty() ? 404 : 401, Json()); // no legacy routes
+                }
+                if (rest == "access") {
+                    return sendOpen_(m_sends[id]) ? sendContent_(id, m_sends[id]) : respond_(404, Json());
+                }
+                if (rest.starts_with("access/file/")) {
+                    return respond_(200, { { "url", SecureString("https://blob.example/send-") + id } });
                 }
                 return respond_(404, Json());
+            }
+
+            if (rest.starts_with("access/")) {
+                SecureString id;
+                Json* send = sendByAccessId_(rest.substr(7), id);
+                if (!send || !sendOpen_(*send)) {
+                    return respond_(404, Json());
+                }
+                if (at(*send, "password").is_string() && stringAt(body, "password") != stringAt(*send, "password")) {
+                    return respond_(401, Json());
+                }
+                return sendContent_(id, *send);
             }
 
             /*

@@ -1,7 +1,11 @@
 #define CPPHTTPLIB_EXPECT_100_THRESHOLD 0
 #include <httplib.h>
 
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <map>
+#include <memory>
 
 #include "http.h"
 #include "utils/logger/logger.h"
@@ -39,8 +43,42 @@ namespace clientwarden {
             return { plain_(url.substr(0, path)), plain_(url.substr(path)) };
         }
 
+#ifdef __ANDROID__
+        /**
+         * @brief The system's trusted CAs as one PEM bundle. Android has no OpenSSL default
+         * paths, and its cacerts directory is named by the old subject hash OpenSSL 3 doesn't
+         * look up, so the certificates are read in directly (the updatable APEX copy first).
+         */
+        const std::string& androidCaBundle_() {
+            static const std::string bundle = []() {
+                std::string pem;
+                for (std::string_view dir :
+                        { "/apex/com.android.conscrypt/cacerts", "/system/etc/security/cacerts" }) {
+                    std::error_code error;
+                    for (const std::filesystem::directory_entry& entry :
+                            std::filesystem::directory_iterator(
+                                    std::filesystem::path(dir), error)) {
+                        std::ifstream in(entry.path(), std::ios::binary);
+                        pem.append(std::istreambuf_iterator<char>(in),
+                                std::istreambuf_iterator<char>());
+                        pem.push_back('\n');
+                    }
+                    if (!pem.empty()) {
+                        break;
+                    }
+                }
+                return pem;
+            }();
+            return bundle;
+        }
+#endif
+
         std::shared_ptr<httplib::Client> makeClient_(std::string origin) {
             std::shared_ptr<httplib::Client> client = std::make_shared<httplib::Client>(origin);
+#ifdef __ANDROID__
+            const std::string& bundle = androidCaBundle_();
+            client->load_ca_cert_store(bundle.data(), bundle.size());
+#endif
             client->set_connection_timeout(5);
             client->set_keep_alive(true);
             client->set_follow_location(false);
@@ -200,11 +238,34 @@ namespace clientwarden {
             return false;
         }
 
+        /*
+         * The hub is configured as an http(s) URL like the other endpoints; the WebSocket
+         * client only takes ws(s).
+         */
+        if (url.starts_with("https://")) {
+            url.replace(0, 5, "wss");
+        } else if (url.starts_with("http://")) {
+            url.replace(0, 4, "ws");
+        }
+
         std::string authorization = "Bearer " + plain_(bearer);
-        httplib::ws::WebSocketClient ws(url + "/hub", { { "Authorization", authorization } });
+        std::unique_ptr<httplib::ws::WebSocketClient> client;
+        try {
+            client = std::make_unique<httplib::ws::WebSocketClient>(
+                    url + "/hub", httplib::Headers { { "Authorization", authorization } });
+        } catch (const std::exception& e) {
+            wipe_(authorization);
+            Logger::get()->warn("Notification hub URL rejected: {}", e.what());
+            return false;
+        }
         wipe_(authorization);
+        httplib::ws::WebSocketClient& ws = *client;
         ws.set_connection_timeout(5);
         ws.set_websocket_ping_interval(30);
+#ifdef __ANDROID__
+        const std::string& bundle = androidCaBundle_();
+        ws.load_ca_cert_store(bundle.data(), bundle.size());
+#endif
         try {
             if (!ws.connect()) {
                 return false;

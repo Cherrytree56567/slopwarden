@@ -109,6 +109,38 @@ TEST_CASE("File Sends upload encrypted and decrypt for the recipient") {
     REQUIRE_THROWS_AS(send->setFile("other.txt", encoding::bytesOf("x")), VaultError);
 }
 
+TEST_CASE("Servers with only the send_access grant (newer Vaultwarden)") {
+    Fixture fixture;
+    fixture.m_server->m_send_token_flow = true;
+    std::shared_ptr<BitwardenVault> vault = loggedInVault(fixture);
+    std::shared_ptr<Sends> sends = vault->getSends();
+
+    std::shared_ptr<Send> text = sends->createSend(SendType::Text);
+    text->setText("classified", false).setPassword("open sesame").setMaxAccessCount(1).commit();
+
+    ReceivedSend received;
+    REQUIRE(sends->open(text->getShareUrl(), "", received) == ReceiveResult::NeedsPassword);
+    REQUIRE(sends->open(text->getShareUrl(), "wrong", received) == ReceiveResult::WrongPassword);
+    REQUIRE(sends->open(text->getShareUrl(), "open sesame", received) == ReceiveResult::Success);
+    REQUIRE(received.m_text == "classified");
+    REQUIRE(sends->open(text->getShareUrl(), "open sesame", received) == ReceiveResult::NotAvailable);
+
+    /*
+     * The token request carries neither the link's key nor the vault's own token.
+    */
+    std::optional<HttpRequest> grant = fixture.m_server->last(HttpMethod::Post, "https://vault.example/identity/connect/token");
+    REQUIRE(grant);
+    REQUIRE(headerOf(*grant, "Authorization").empty());
+    SecureString fragment = text->getShareUrl().substr(text->getShareUrl().rfind('/') + 1);
+    REQUIRE(grant->m_body.find(fragment) == SecureString::npos);
+
+    std::shared_ptr<Send> file = sends->createSend(SendType::File);
+    file->setFile("report.txt", encoding::bytesOf("quarterly numbers")).commit();
+    REQUIRE(sends->open(file->getShareUrl(), "", received) == ReceiveResult::Success);
+    REQUIRE(sends->downloadReceivedFile(received, "/downloads/report.txt", nullptr));
+    REQUIRE(encoding::textOf(*fixture.m_files->read("/downloads/report.txt")) == "quarterly numbers");
+}
+
 TEST_CASE("Editing, listing and deleting Sends") {
     Fixture fixture;
     std::shared_ptr<BitwardenVault> vault = loggedInVault(fixture);

@@ -151,6 +151,15 @@ namespace clientwarden {
             }
         }
 
+        /*
+         * Snapshot before fetching: anything saved while the request is in flight is then
+         * newer than the snapshot and survives the merge, rather than looking like it was
+         * deleted on the server (it's missing from the response).
+         */
+        Store::Snapshot before = m_store_->takeSnapshot();
+        IdSet pending_folders = toSet_(m_store_->getPendingFolderDeletes());
+        IdSet pending_ciphers = toSet_(m_store_->getPendingCipherDeletes());
+
         std::optional<Json> remote = m_network_->getSync();
         if (!remote || !remote->is_object()) {
             return false;
@@ -174,10 +183,6 @@ namespace clientwarden {
             }
             return false;
         }
-
-        Store::Snapshot before = m_store_->takeSnapshot();
-        IdSet pending_folders = toSet_(m_store_->getPendingFolderDeletes());
-        IdSet pending_ciphers = toSet_(m_store_->getPendingCipherDeletes());
 
         MergeResult folders = merge(before.m_folders, at(*remote, "folders"), pending_folders);
         std::unordered_map<SecureString, SecureString, SecureStringHash, std::equal_to<>>
@@ -216,16 +221,17 @@ namespace clientwarden {
 
         MergeResult ciphers = merge(local_ciphers, at(*remote, "ciphers"), pending_ciphers);
         bool legacy = m_features_->needsLegacyData();
+        SecureString user_id = stringAt(at(*remote, "profile"), "id");
         for (const Record& cipher : ciphers.m_to_create) {
             std::optional<Json> created =
-                    m_network_->createCipher(Schema::wireFormat(*cipher, legacy));
+                    m_network_->createCipher(Schema::wireFormat(*cipher, legacy, user_id));
             if (created) {
                 replace_(ciphers.m_merged, cipher, std::move(*created));
             }
         }
         for (const Record& cipher : ciphers.m_to_update) {
             std::optional<Json> updated =
-                    m_network_->updateCipher(Schema::wireFormat(*cipher, legacy));
+                    m_network_->updateCipher(Schema::wireFormat(*cipher, legacy, user_id));
             if (updated) {
                 replace_(ciphers.m_merged, cipher, std::move(*updated));
             }

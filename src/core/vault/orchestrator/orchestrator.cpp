@@ -103,6 +103,11 @@ namespace clientwarden {
         }
     }
 
+    SecureString Orchestrator::userId_() {
+        Json profile = m_store_->getProfile();
+        return stringAt(profile, "id");
+    }
+
     std::shared_ptr<GenericItem> Orchestrator::getGenericItem(std::string_view id) {
         Json cipher = getCipherJson_(id);
         SymmetricKey key = itemKeyFor_(cipher);
@@ -144,7 +149,7 @@ namespace clientwarden {
         Record existing = m_store_->getCipher(id);
         bool is_new = !existing || createdOffline_(*existing);
         bool organization = item.getOrganizationId().has_value();
-        Json wire = Schema::wireFormat(item.getJson(), m_features_->needsLegacyData());
+        Json wire = Schema::wireFormat(item.getJson(), m_features_->needsLegacyData(), userId_());
 
         std::optional<Json> result;
         if (is_new && organization) {
@@ -259,7 +264,7 @@ namespace clientwarden {
 
         Json shared =
                 item.sharedJson(organization_id, organizationKey_(organization_id), collection_ids);
-        Json wire = Schema::wireFormat(shared, m_features_->needsLegacyData());
+        Json wire = Schema::wireFormat(shared, m_features_->needsLegacyData(), userId_());
         std::optional<Json> result = m_network_->shareCipher(item.getId(), wire, collection_ids);
         if (!result || stringAt(*result, "id").empty()) {
             return false;

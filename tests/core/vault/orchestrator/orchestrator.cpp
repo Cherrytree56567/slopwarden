@@ -25,6 +25,13 @@ TEST_CASE("Create, commit and reload an item") {
     Json stored = fixture.m_server->m_ciphers[login->getId()];
     REQUIRE(stored.dump().find("hunter2") == SecureString::npos);
 
+    /*
+     * Vaultwarden rejects cipher bodies without the encrypting user's id.
+    */
+    std::optional<HttpRequest> create = fixture.m_server->last(HttpMethod::Post, "/api/ciphers");
+    REQUIRE(create);
+    REQUIRE(Json::parse(create->m_body)["encryptedFor"] == "user-1");
+
     std::shared_ptr<LoginItem> reloaded = orchestrator->getItem<LoginItem>(login->getId());
     REQUIRE(reloaded->getUsername() == "octocat");
     REQUIRE(reloaded->getPassword() == "hunter2");

@@ -324,6 +324,7 @@ namespace clientwarden {
         SymmetricKey organizationKey_(std::string_view organization_id);
         std::optional<SymmetricKey> wrappingKeyFor_(const Json& cipher);
         void requireEditable_(GenericItem& item);
+        SecureString userId_();
         SymmetricKey itemKeyFor_(const Json& cipher);
         bool commitStatus_(GenericItem& item, bool ok);
 
