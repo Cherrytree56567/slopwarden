@@ -27,38 +27,18 @@
         try {
             ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
 
-            v_inst.SetUris(vaultURL.UTF8String, mainURL.UTF8String, apiURL.UTF8String, iconURL.UTF8String, wssURL.UTF8String);
+            /*
+             * The main URL isn't needed by the vault; Bitwarden only uses it
+             * for the web UI.
+            */
+            v_inst.SetServer(ClientWarden::ServerUrls { vaultURL.UTF8String, apiURL.UTF8String, iconURL.UTF8String, wssURL.UTF8String });
 
-            std::string c_email = email.UTF8String;
-            std::string c_password = password.UTF8String;
+            ClientWarden::LoginResult result = v_inst.Login(email.UTF8String, password.UTF8String);
 
-            bool result = v_inst.Login(c_email, c_password);
-
-            if (!result) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    Toast* toast = [[Toast alloc] initWithMessage:@"Wrong Email or Password"];
-                    [[ToastStore instance] addToast:toast];
-                });
+            if (![self presentLoginResult:result]) {
                 return NO;
             }
-
-            if (v_inst.state == ClientWarden::AuthState::WaitingForTOTP) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    Login.instance.ViewType = LoginViewTypeTOTP;
-                    ClientwardenWindow.instance.state = WindowStateLogin;
-                });
-                return YES;
-            } else if (v_inst.state == ClientWarden::AuthState::WaitingForDeviceVerif) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    Login.instance.ViewType = LoginViewTypeTOTP;
-                    ClientwardenWindow.instance.state = WindowStateLogin;
-                });
-                return YES;
-            } else if (v_inst.state == ClientWarden::AuthState::WaitingForPasskey) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    Login.instance.ViewType = LoginViewTypePasskey;
-                    ClientwardenWindow.instance.state = WindowStateLogin;
-                });
+            if (result != ClientWarden::LoginResult::Success) {
                 return YES;
             }
 
@@ -88,23 +68,9 @@
         try {
             ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
 
-            std::string c_code = code.UTF8String;
-            bool result;
+            ClientWarden::LoginResult result = v_inst.SubmitCode(code.UTF8String);
 
-            if (v_inst.state == ClientWarden::AuthState::WaitingForDeviceVerif) {
-                result = v_inst.Login(c_code);
-            } else if (v_inst.state == ClientWarden::AuthState::WaitingForTOTP) {
-                result = v_inst.Login(c_code);
-            } else {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    Login.instance.ViewType = LoginViewTypeLogin;
-                    Toast* toast = [[Toast alloc] initWithMessage:@"Unknown code type"];
-                    [[ToastStore instance] addToast:toast];
-                });
-                return NO;
-            }
-
-            if (!result) {
+            if (result != ClientWarden::LoginResult::Success) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     Login.instance.ViewType = LoginViewTypeLogin;
                     Toast* toast = [[Toast alloc] initWithMessage:@"Failed to Authenticate"];
@@ -132,6 +98,34 @@
 static LoginBridge* p_loginBridge = nil;
 
 /*
+ * Moves the login view to the next step for a login result, or shows why
+ * it failed. Returns NO on failure.
+ */
++ (BOOL)presentLoginResult:(ClientWarden::LoginResult)result {
+    using ClientWarden::LoginResult;
+
+    if (result == LoginResult::NeedsTotp || result == LoginResult::NeedsDeviceVerification || result == LoginResult::NeedsPasskey) {
+        LoginViewType view = result == LoginResult::NeedsPasskey ? LoginViewTypePasskey : LoginViewTypeTOTP;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            Login.instance.ViewType = view;
+            ClientwardenWindow.instance.state = WindowStateLogin;
+        });
+        return YES;
+    }
+    if (result == LoginResult::Success) {
+        return YES;
+    }
+
+    NSString* message = result == LoginResult::InvalidCredentials ? @"Wrong Email or Password"
+        : result == LoginResult::Offline ? @"Can't reach the server" : @"Failed to Authenticate";
+    dispatch_async(dispatch_get_main_queue(), ^{
+        Toast* toast = [[Toast alloc] initWithMessage:message];
+        [[ToastStore instance] addToast:toast];
+    });
+    return NO;
+}
+
+/*
  * usePasskey is used when BitWarden requests a Passkey
  * to be used to login.
  */
@@ -141,18 +135,18 @@ static LoginBridge* p_loginBridge = nil;
             p_loginBridge = [LoginBridge new];
             ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
 
-            keychain::Error e1;
+            std::optional<ClientWarden::PasskeyRequest> passkey = v_inst.PendingPasskey();
 
-            NSData* challenge = [NSData dataWithBytes:v_inst.passkeyChallenge.data() length:v_inst.passkeyChallenge.size()];
-            NSString* rpID = [NSString stringWithUTF8String:keychain::getPassword(CWbundleID, "vaultURL", e1).c_str()];
-
-            if (e1.type != keychain::ErrorType::NoError) {
+            if (!passkey) {
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    Toast* toast = [[Toast alloc] initWithMessage:@"Failed to use KeyChain"];
+                    Toast* toast = [[Toast alloc] initWithMessage:@"No passkey requested"];
                     [[ToastStore instance] addToast:toast];
                 });
                 return NO;
             }
+
+            NSData* challenge = [NSData dataWithBytes:passkey->challenge.data() length:passkey->challenge.size()];
+            NSString* rpID = [NSString stringWithUTF8String:passkey->relyingParty.c_str()];
             
             ASAuthorizationPlatformPublicKeyCredentialProvider* provider = 
                 [[ASAuthorizationPlatformPublicKeyCredentialProvider alloc] initWithRelyingPartyIdentifier:rpID];
@@ -190,22 +184,12 @@ static LoginBridge* p_loginBridge = nil;
     NSData* clientData = cred.rawClientDataJSON;
     NSData* signature = cred.signature;
     
-    std::string c_id = std::string((const char*)credentialID.bytes, credentialID.length);
-    std::string c_authData = std::string((const char*)authData.bytes, authData.length);
-    std::string c_clientData = std::string((const char*)clientData.bytes, clientData.length);
-    std::string c_signature = std::string((const char*)signature.bytes, signature.length);
+    auto bytes = [](NSData* data) {
+        return std::span<const uint8_t>(static_cast<const uint8_t*>(data.bytes), data.length);
+    };
 
-    bool result;
-
-    if (v_inst.state == ClientWarden::AuthState::WaitingForPasskey) {
-        result = v_inst.Login(c_id, c_authData, c_clientData, c_signature);
-    } else {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            Toast* toast = [[Toast alloc] initWithMessage:@"Failed to use passkey"];
-            [[ToastStore instance] addToast:toast];
-        });
-        return;
-    }
+    bool result = v_inst.SubmitPasskey(bytes(credentialID), bytes(authData), bytes(clientData), bytes(signature)) ==
+        ClientWarden::LoginResult::Success;
 
     if (!result) {
         dispatch_async(dispatch_get_main_queue(), ^{

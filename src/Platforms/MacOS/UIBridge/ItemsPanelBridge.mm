@@ -1,18 +1,8 @@
 #import "ItemsPanelBridge.h"
 #import <Cocoa/Cocoa.h>
 #import "clientwarden-Swift.h"
-#include "CipherQuery/CipherQuery.h"
-#include "GenericItem/GenericItem.h"
-#include "LoginItem/LoginItem.h"
-#include "CardItem/CardItem.h"
-#include "IdentityItem/IdentityItem.h"
-#include "NoteItem/NoteItem.h"
-#include "SSHKeyItem/SSHKeyItem.h"
-#include "BankAccountItem/BankAccountItem.h"
-#include "DriversLicenseItem/DriversLicenseItem.h"
-#include "PassportItem/PassportItem.h"
-#include "Folder/Folder.h"
 #include "Vault.h"
+#include "ItemElements.h"
 
 @implementation ItemsPanelBridge
 
@@ -26,118 +16,71 @@
     [self cb_new];
 }
 
+ItemType ItemTypeFor(ClientWarden::CipherType type) {
+    switch (type) {
+        case ClientWarden::CipherType::Login: return ItemTypeLogin;
+        case ClientWarden::CipherType::Card: return ItemTypeCard;
+        case ClientWarden::CipherType::Identity: return ItemTypeIdentity;
+        case ClientWarden::CipherType::Note: return ItemTypeNote;
+        case ClientWarden::CipherType::SSHKey: return ItemTypeSSHKey;
+        case ClientWarden::CipherType::BankAccount: return ItemTypeBankAccount;
+        case ClientWarden::CipherType::DriversLicense: return ItemTypeDriversLicense;
+        case ClientWarden::CipherType::Passport: return ItemTypePassport;
+        default: return ItemTypeNote;
+    }
+}
+
+ClientwardenImage* PlaceholderImageFor(ClientWarden::CipherType type) {
+    NSString* symbol = @"questionmark.app.dashed";
+    switch (type) {
+        case ClientWarden::CipherType::Login: symbol = @"globe"; break;
+        case ClientWarden::CipherType::Card: symbol = @"creditcard"; break;
+        case ClientWarden::CipherType::Identity: symbol = @"person.text.rectangle"; break;
+        case ClientWarden::CipherType::Note: symbol = @"pad.header"; break;
+        case ClientWarden::CipherType::SSHKey: symbol = @"key.viewfinder"; break;
+        case ClientWarden::CipherType::BankAccount: symbol = @"dollarsign.circle"; break;
+        case ClientWarden::CipherType::DriversLicense: symbol = @"licenseplate"; break;
+        case ClientWarden::CipherType::Passport: symbol = @"list.bullet.rectangle.portrait"; break;
+        default: break;
+    }
+    return [[ClientwardenImage alloc] initWithType:ImageTypeSystemImage path:symbol];
+}
+
 /*
- * GetItems takes in a ciphers array with the item type and id.
- * GetItems iterates through the ids and gets the name, and converts
- * the cipherType to itemType and getting the image.
+ * Builds the list rows: decrypted name, item type and an icon (the
+ * site favicon for logins, an SF Symbol otherwise).
  */
-+ (NSArray<ItemElement*>*)getItems:(std::vector<std::pair<ClientWarden::CipherType, std::string>>)ciphers {
-    try {
-        ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+NSArray<ItemElement*>* MakeItemElements(const std::vector<ClientWarden::ItemSummary>& ciphers) {
+    ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+    NSMutableArray<ItemElement*>* items = [NSMutableArray array];
 
-        NSMutableArray<ItemElement*>* items = [NSMutableArray array];
-
-        for (auto& cipher : ciphers) {
-            NSUUID* uuid = [[NSUUID alloc] initWithUUIDString:[NSString stringWithUTF8String: cipher.second.c_str()]];
-
-            std::string c_name;
-
-            v_inst.GetItem(cipher.second)
-                 ->GetName(c_name)
-                 ->Close();
-
-            NSString* name = [NSString stringWithUTF8String: c_name.c_str()];
-
-            ClientwardenImage* img = nil;
-
-            if (cipher.first == ClientWarden::CipherType::Login) {
-                std::vector<std::string> loginUrl;
-
-                v_inst.GetItem<ClientWarden::LoginItem>(cipher.second)
-                     ->GetWebsites(loginUrl)
-                     ->Close();
-
-                if (loginUrl.size() != 0) {
-                    std::optional<std::string> result = v_inst.DownloadIcon(loginUrl[0]);
-                    if (result.has_value()) {
-                        NSString* path = [NSString stringWithUTF8String: result.value().c_str()];
-
-                        img = [[ClientwardenImage alloc] initWithType:ImageTypeAppSupport path:path];
-                    } else {
-                        img = [[ClientwardenImage alloc] initWithType:ImageTypeSystemImage path:@"globe"];
-                    }
-                } else {
-                    img = [[ClientwardenImage alloc] initWithType:ImageTypeSystemImage path:@"globe"];
-                }
-
-                for (auto& uri : loginUrl) {
-                    OPENSSL_cleanse(uri.data(), uri.size());
-                    uri.clear();
-                }
-            } else if (cipher.first == ClientWarden::CipherType::Card) {
-                img = [[ClientwardenImage alloc] initWithType:ImageTypeSystemImage path:@"creditcard"];
-            } else if (cipher.first == ClientWarden::CipherType::Identity) {
-                img = [[ClientwardenImage alloc] initWithType:ImageTypeSystemImage path:@"person.text.rectangle"];
-            } else if (cipher.first == ClientWarden::CipherType::Note) {
-                img = [[ClientwardenImage alloc] initWithType:ImageTypeSystemImage path:@"pad.header"];
-            } else if (cipher.first == ClientWarden::CipherType::SSHKey) {
-                img = [[ClientwardenImage alloc] initWithType:ImageTypeSystemImage path:@"key.viewfinder"];
-            } else if (cipher.first == ClientWarden::CipherType::BankAccount) {
-                img = [[ClientwardenImage alloc] initWithType:ImageTypeSystemImage path:@"dollarsign.circle"];
-            } else if (cipher.first == ClientWarden::CipherType::DriversLicense) {
-                img = [[ClientwardenImage alloc] initWithType:ImageTypeSystemImage path:@"licenseplate"];
-            } else if (cipher.first == ClientWarden::CipherType::Passport) {
-                img = [[ClientwardenImage alloc] initWithType:ImageTypeSystemImage path:@"list.bullet.rectangle.portrait"];
-            } else {
-                img = [[ClientwardenImage alloc] initWithType:ImageTypeSystemImage path:@"questionmark.app.dashed"];
-            }
-
-            ItemType i_type;
-            switch (cipher.first) {
-                case ClientWarden::CipherType::Login:
-                    i_type = ItemTypeLogin;
-                    break;
-                case ClientWarden::CipherType::Card:
-                    i_type = ItemTypeCard;
-                    break;
-                case ClientWarden::CipherType::Identity:
-                    i_type = ItemTypeIdentity;
-                    break;
-                case ClientWarden::CipherType::Note:
-                    i_type = ItemTypeNote;
-                    break;
-                case ClientWarden::CipherType::SSHKey:
-                    i_type = ItemTypeSSHKey;
-                    break;
-                case ClientWarden::CipherType::BankAccount:
-                    i_type = ItemTypeBankAccount;
-                    break;
-                case ClientWarden::CipherType::DriversLicense:
-                    i_type = ItemTypeDriversLicense;
-                    break;
-                case ClientWarden::CipherType::Passport:
-                    i_type = ItemTypePassport;
-                    break;
-                default:
-                    i_type = ItemTypeNote;
-                    break;
-            }
-
-            ItemElement* element = [[ItemElement alloc] initWithName:name uuid:uuid type:i_type image:img];
-
-            [items addObject:element];
+    for (const auto& cipher : ciphers) {
+        std::optional<ClientWarden::Item> item = v_inst.GetItem(cipher.id);
+        if (!item) {
+            continue;
         }
 
-        return items;
-    } catch (...) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            Toast* toast = [[Toast alloc] initWithMessage:@"Failed to Get Items"];
-            [[ToastStore instance] addToast:toast];
-        });
+        NSUUID* uuid = [[NSUUID alloc] initWithUUIDString:[NSString stringWithUTF8String: cipher.id.c_str()]];
 
-        NSMutableArray<ItemElement*>* items = [NSMutableArray array];
-        return items;
+        ClientWarden::SecretString c_name = item->Name();
+        NSString* name = [[NSString alloc] initWithBytes:c_name.data() length:c_name.size() encoding:NSUTF8StringEncoding];
+
+        ClientwardenImage* img = nil;
+        if (cipher.type == ClientWarden::CipherType::Login) {
+            std::vector<ClientWarden::SecretString> uris = item->Uris();
+            std::optional<std::string> icon = uris.empty() ? std::nullopt : v_inst.Icon(uris[0]);
+            if (icon) {
+                img = [[ClientwardenImage alloc] initWithType:ImageTypeAppSupport path:[NSString stringWithUTF8String: icon->c_str()]];
+            }
+        }
+        if (!img) {
+            img = PlaceholderImageFor(cipher.type);
+        }
+
+        [items addObject:[[ItemElement alloc] initWithName:name uuid:uuid type:ItemTypeFor(cipher.type) image:img]];
     }
+
+    return items;
 }
 
 /*
@@ -148,18 +91,12 @@
     ItemsPanel.instance.cb_query = ^NSArray* _Nonnull(NSString* name) {
         try {
             ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
-            ClientWarden::CipherQuery query(v_inst);
+            std::vector<ClientWarden::ItemSummary> ciphers = v_inst.Query()
+                .NotInBin()
+                .NameContains(name.UTF8String)
+                .Run();
 
-            std::string c_name = name.UTF8String;
-
-            std::vector<std::pair<ClientWarden::CipherType, std::string>> ciphers;
-
-            ciphers = v_inst.GetCipherQuery()
-                           ->FilterByUnbinned()
-                            .FilterNameByRegex(c_name)
-                            .GetCiphers();
-
-            return [ItemsPanelBridge getItems:ciphers];
+            return MakeItemElements(ciphers);
         } catch (...) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 Toast* toast = [[Toast alloc] initWithMessage:@"Failed to query"];
@@ -180,56 +117,32 @@
         try {
             ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
 
-            std::shared_ptr<ClientWarden::GenericItem> item;
-
-            ClientwardenImage* img = nil;
-            NSString* name = @"New Item";
-            
-            if (i_type == ItemTypeLogin) {
-                item = v_inst.CreateItem<ClientWarden::LoginItem>();
-                img = [[ClientwardenImage alloc] initWithType:ImageTypeSystemImage path:@"globe"];
-            } else if (i_type == ItemTypeCard) {
-                item = v_inst.CreateItem<ClientWarden::CardItem>();
-                img = [[ClientwardenImage alloc] initWithType:ImageTypeSystemImage path:@"creditcard"];
-            } else if (i_type == ItemTypeIdentity) {
-                item = v_inst.CreateItem<ClientWarden::IdentityItem>();
-                img = [[ClientwardenImage alloc] initWithType:ImageTypeSystemImage path:@"person.text.rectangle"];
-            } else if (i_type == ItemTypeNote) {
-                item = v_inst.CreateItem<ClientWarden::NoteItem>();
-                img = [[ClientwardenImage alloc] initWithType:ImageTypeSystemImage path:@"pad.header"];
-            } else if (i_type == ItemTypeSSHKey) {
-                item = v_inst.CreateItem<ClientWarden::SSHKeyItem>();
-                img = [[ClientwardenImage alloc] initWithType:ImageTypeSystemImage path:@"key.viewfinder"];
-            } else if (i_type == ItemTypeBankAccount) {
-                item = v_inst.CreateItem<ClientWarden::BankAccountItem>();
-                img = [[ClientwardenImage alloc] initWithType:ImageTypeSystemImage path:@"dollarsign.circle"];
-            } else if (i_type == ItemTypeDriversLicense) {
-                item = v_inst.CreateItem<ClientWarden::DriversLicenseItem>();
-                img = [[ClientwardenImage alloc] initWithType:ImageTypeSystemImage path:@"licenseplate"];
-            } else if (i_type == ItemTypePassport) {
-                item = v_inst.CreateItem<ClientWarden::PassportItem>();
-                img = [[ClientwardenImage alloc] initWithType:ImageTypeSystemImage path:@"list.bullet.rectangle.portrait"];
-            } else {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    Toast* toast = [[Toast alloc] initWithMessage:@"Failed to create new item: Invalid Item Type"];
-                    [[ToastStore instance] addToast:toast];
-                });
-
-                return nil;
+            ClientWarden::CipherType type;
+            switch (i_type) {
+                case ItemTypeLogin: type = ClientWarden::CipherType::Login; break;
+                case ItemTypeCard: type = ClientWarden::CipherType::Card; break;
+                case ItemTypeIdentity: type = ClientWarden::CipherType::Identity; break;
+                case ItemTypeNote: type = ClientWarden::CipherType::Note; break;
+                case ItemTypeSSHKey: type = ClientWarden::CipherType::SSHKey; break;
+                case ItemTypeBankAccount: type = ClientWarden::CipherType::BankAccount; break;
+                case ItemTypeDriversLicense: type = ClientWarden::CipherType::DriversLicense; break;
+                case ItemTypePassport: type = ClientWarden::CipherType::Passport; break;
+                default:
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        Toast* toast = [[Toast alloc] initWithMessage:@"Failed to create new item: Invalid Item Type"];
+                        [[ToastStore instance] addToast:toast];
+                    });
+                    return nil;
             }
 
-            std::string c_name = "New Item";
-            std::string c_uuid = "";
-
-            item->SetName(c_name)
-                ->Commit();
+            ClientWarden::Item item = v_inst.NewItem(type);
+            item.SetName("New Item");
+            v_inst.Save(item);
             
-            item->GetId(c_uuid);
-            
-            NSString* s_uuid = [NSString stringWithUTF8String: c_uuid.c_str()];
+            NSString* s_uuid = [NSString stringWithUTF8String: item.Id().c_str()];
             NSUUID* uuid = [[NSUUID alloc] initWithUUIDString: s_uuid];
 
-            return [[ItemElement alloc] initWithName:name uuid:uuid type:i_type image:img];
+            return [[ItemElement alloc] initWithName:@"New Item" uuid:uuid type:i_type image:PlaceholderImageFor(type)];
         } catch (...) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 Toast* toast = [[Toast alloc] initWithMessage:@"Failed to create new item"];

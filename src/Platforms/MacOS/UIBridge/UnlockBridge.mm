@@ -26,7 +26,7 @@
         try {
             ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
 
-            std::string name = v_inst.profile.profileName();
+            std::string name = v_inst.ProfileName();
             NSString *n_name = [NSString stringWithUTF8String: name.c_str()];
 
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -55,11 +55,12 @@
         try {
             ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
 
-            std::string c_password = password.UTF8String;
+            ClientWarden::UnlockResult result = v_inst.Unlock(password.UTF8String);
 
-            if (!v_inst.Unlock(c_password)) {
+            if (result != ClientWarden::UnlockResult::Success) {
+                NSString* message = result == ClientWarden::UnlockResult::InvalidPassword ? @"Invalid Password" : @"Failed to Unlock Vault";
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    Toast* toast = [[Toast alloc] initWithMessage:@"Invalid Password"];
+                    Toast* toast = [[Toast alloc] initWithMessage:message];
                     [[ToastStore instance] addToast:toast];
                 });
                 return NO;
@@ -91,7 +92,7 @@
         try {
             ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
 
-            if (!v_inst.Unlock()) {
+            if (v_inst.UnlockWithBiometrics() != ClientWarden::UnlockResult::Success) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     Toast* toast = [[Toast alloc] initWithMessage:@"Failed to Unlock"];
                     [[ToastStore instance] addToast:toast];

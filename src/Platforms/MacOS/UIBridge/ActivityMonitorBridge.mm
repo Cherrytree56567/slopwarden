@@ -3,7 +3,6 @@
 #include <thread>
 #import "clientwarden-Swift.h"
 #include "Vault.h"
-#include "CBridge.h"
 
 @implementation ActivityMonitorBridge
 
@@ -16,7 +15,7 @@
         try {
             ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
 
-            v_inst.inactivityTimer = (time_t)[date timeIntervalSince1970];
+            v_inst.NoteActivity((time_t)[date timeIntervalSince1970]);
 
             return YES;
         } catch (...) {

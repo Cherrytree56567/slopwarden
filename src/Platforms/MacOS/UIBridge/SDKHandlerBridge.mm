@@ -6,10 +6,14 @@
 #include <vector>
 #include <string>
 #include "Vault.h"
-#include "LoginItem/LoginItem.h"
+#include "Util/Util.h"
 
+/*
+ * Callbacks for the AutoFill extension. Failures return empty strings
+ * and are logged rather than toasted, since there's no window to show
+ * them in.
+ */
 @implementation SDKHandlerBridge
-
 
 /*
  * Setup Callbacks will be called inside of the swift class
@@ -26,108 +30,80 @@
     [self cb_getPasskeyInfo];
 }
 
-bool compareURLs(std::string url1, std::string url2) {
-    /*
-     * First, we need to get the boost url thing
-     * for the first URL
-     */
-    std::optional<boost::urls::url> b_url1;
-
-    boost::system::result<boost::urls::url_view> res_u1 = boost::urls::parse_uri(url1);
-    if (res_u1.has_error()) {
-        boost::system::result<boost::urls::url_view> res1 = boost::urls::parse_uri("https://" + url1);
-        if (res1.has_error()) {
-            return false;
-        }
-        b_url1 = boost::urls::url(res1.value());
+/*
+ * Lowercased host of a URL, accepting bare domains ("github.com") as
+ * well as full URLs.
+ */
+static std::optional<std::string> HostOf(std::string_view url) {
+    auto parsed = boost::urls::parse_uri(url);
+    if (!parsed || parsed->host().empty()) {
+        parsed = boost::urls::parse_uri("https://" + std::string(url));
     }
-    b_url1 = boost::urls::url(res_u1.value());
-
-    /*
-     * Then, we need to get the boost url thing
-     * for the second URL
-     */
-    std::optional<boost::urls::url> b_url2;
-
-    boost::system::result<boost::urls::url_view> res_u2 = boost::urls::parse_uri(url2);
-    if (res_u2.has_error()) {
-        boost::system::result<boost::urls::url_view> res1 = boost::urls::parse_uri("https://" + url2);
-        if (res1.has_error()) {
-            return false;
-        }
-        b_url2 = boost::urls::url(res1.value());
+    if (!parsed || parsed->host().empty()) {
+        return std::nullopt;
     }
-    b_url2 = boost::urls::url(res_u2.value());
+    return ClientWarden::ToLower(parsed->host());
+}
 
-    /*
-     * Get the url of both URLs in a standardised
-     * format.
-     */
-    std::string u_url1 = b_url1->host();
-    std::string u_url2 = b_url2->host();
+static std::string LowerUUID(NSString* uuid) {
+    return ClientWarden::ToLower(uuid.UTF8String);
+}
 
-    /*
-     * Make them lowercase
-     * just in case
-     */
-    std::transform(u_url1.begin(), u_url1.end(), u_url1.begin(), ::tolower);
-    std::transform(u_url2.begin(), u_url2.end(), u_url2.begin(), ::tolower);
+static NSString* NS(const ClientWarden::SecretString& s) {
+    return [[NSString alloc] initWithBytes:s.data() length:s.size() encoding:NSUTF8StringEncoding];
+}
 
-    return u_url1 == u_url2;
+/*
+ * Comma-separated ids of usable logins with a URI on the same host as
+ * `website`.
+ */
+static NSString* MatchingLogins(NSString* website, bool passkeysOnly) {
+    std::optional<std::string> host = HostOf(website.UTF8String);
+    if (!host) {
+        return @"";
+    }
+
+    ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+    ClientWarden::ItemQuery query = v_inst.Query();
+    query.NotInBin().NotArchived().OfType(ClientWarden::CipherType::Login);
+    if (passkeysOnly) {
+        query.WithPasskey();
+    }
+
+    std::vector<std::string> matched;
+    for (const auto& id : query.Ids()) {
+        std::optional<ClientWarden::Item> item = v_inst.GetItem(id);
+        if (!item) {
+            continue;
+        }
+        for (const auto& uri : item->Uris()) {
+            if (HostOf(std::string_view(uri.data(), uri.size())) == host) {
+                matched.push_back(id);
+                break;
+            }
+        }
+    }
+
+    return [NSString stringWithUTF8String: boost::algorithm::join(matched, ",").c_str()];
+}
+
+/*
+ * Decrypts one field of a login, or "" if it isn't one.
+ */
+static NSString* LoginField(NSString* uuid, ClientWarden::FieldId field) {
+    std::optional<ClientWarden::Item> item = ClientWarden::Vault::Instance().GetItem(LowerUUID(uuid));
+    if (!item || item->Type() != ClientWarden::CipherType::Login) {
+        return @"";
+    }
+    return NS(item->Get(field));
 }
 
 + (void)cb_getLogins {
     SDKHandler.instance.cb_getLogins = ^NSString* (NSString* website) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
-
-            std::string c_website = website.UTF8String;
-
-            std::vector<std::string> ciphers;
-            
-            ciphers = v_inst.GetCipherQuery()
-                           ->FilterByUnbinned()
-                            .FilterByUnarchived()
-                            .FilterByType(ClientWarden::CipherType::Login)
-                            .Get();
-            
-            std::vector<std::string> matchedCips;
-
-            for (auto& cipher : ciphers) {
-                if (cipher == "") {
-                    continue;
-                }
-                
-                std::vector<std::string> websites;
-
-                v_inst.GetItem<ClientWarden::LoginItem>(cipher)
-                     ->GetWebsites(websites)
-                     ->Close();
-                
-                bool webMatched = false;
-                for (auto& l_website : websites) {
-                    if (compareURLs(l_website, c_website)) {
-                        webMatched = true;
-                        break;
-                    }
-                }
-
-                if (webMatched) {
-                    matchedCips.push_back(cipher);
-                }
-
-                websites.clear();
-            }
-
-            std::string result = boost::algorithm::join(matchedCips, ",");
-
-            return [NSString stringWithUTF8String: result.c_str()];
-        } catch (...) {
-            /*
-             * Put an error thing for the log here
-             * DO NOT USE THE SWIFT TOASTS FOR THIS
-             */
-
+            return MatchingLogins(website, false);
+        } catch (const std::exception& e) {
+            ClientWarden::Log()->warn("AutoFill login lookup failed: {}", e.what());
             return @"";
         }
     };
@@ -136,28 +112,10 @@ bool compareURLs(std::string url1, std::string url2) {
 + (void)cb_getTitle {
     SDKHandler.instance.cb_getTitle = ^NSString* (NSString* uuid) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
-
-            std::string c_uuid = uuid.UTF8String;
-            std::transform(c_uuid.begin(), c_uuid.end(), c_uuid.begin(), ::tolower);
-
-            if (c_uuid == "") {
-                return @"";
-            }
-
-            std::string c_name = "";
-
-            v_inst.GetItem(c_uuid)
-                 ->GetName(c_name)
-                 ->Close();
-
-            return [NSString stringWithUTF8String: c_name.c_str()];
-        } catch (...) {
-            /*
-             * Put an error thing for the log here
-             * DO NOT USE THE SWIFT TOASTS FOR THIS
-             */
-
+            std::optional<ClientWarden::Item> item = ClientWarden::Vault::Instance().GetItem(LowerUUID(uuid));
+            return item ? NS(item->Name()) : @"";
+        } catch (const std::exception& e) {
+            ClientWarden::Log()->warn("AutoFill title lookup failed: {}", e.what());
             return @"";
         }
     };
@@ -166,40 +124,9 @@ bool compareURLs(std::string url1, std::string url2) {
 + (void)cb_getUsername {
     SDKHandler.instance.cb_getUsername = ^NSString* (NSString* uuid) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
-
-            std::string c_uuid = uuid.UTF8String;
-            std::transform(c_uuid.begin(), c_uuid.end(), c_uuid.begin(), ::tolower);
-
-            if (c_uuid == "") {
-                return @"";
-            }
-
-            std::string c_username = "";
-            ClientWarden::CipherType type;
-
-            v_inst.GetItem(c_uuid)
-                 ->GetType(type)
-                 ->Close();
-            
-            if (type != ClientWarden::CipherType::Login) {
-                /*
-                 * TODO: Log an error here
-                 */
-                return @"";
-            }
-
-            v_inst.GetItem<ClientWarden::LoginItem>(c_uuid)
-                 ->GetUsername(c_username)
-                 ->Close();
-
-            return [NSString stringWithUTF8String: c_username.c_str()];
-        } catch (...) {
-            /*
-             * Put an error thing for the log here
-             * DO NOT USE THE SWIFT TOASTS FOR THIS
-             */
-
+            return LoginField(uuid, ClientWarden::Fields::Login::Username);
+        } catch (const std::exception& e) {
+            ClientWarden::Log()->warn("AutoFill username lookup failed: {}", e.what());
             return @"";
         }
     };
@@ -208,153 +135,32 @@ bool compareURLs(std::string url1, std::string url2) {
 + (void)cb_getPassword {
     SDKHandler.instance.cb_getPassword = ^NSString* (NSString* uuid) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
-
-            std::string c_uuid = uuid.UTF8String;
-            std::transform(c_uuid.begin(), c_uuid.end(), c_uuid.begin(), ::tolower);
-
-            if (c_uuid == "") {
-                return @"";
-            }
-
-            std::string c_password = "";
-            ClientWarden::CipherType type;
-
-            v_inst.GetItem(c_uuid)
-                 ->GetType(type)
-                 ->Close();
-            
-            if (type != ClientWarden::CipherType::Login) {
-                /*
-                 * TODO: Log an error here
-                 */
-                return @"";
-            }
-
-            v_inst.GetItem<ClientWarden::LoginItem>(c_uuid)
-                 ->GetPassword(c_password)
-                 ->Close();
-
-            return [NSString stringWithUTF8String: c_password.c_str()];
-        } catch (...) {
-            /*
-             * Put an error thing for the log here
-             * DO NOT USE THE SWIFT TOASTS FOR THIS
-             */
-
+            return LoginField(uuid, ClientWarden::Fields::Login::Password);
+        } catch (const std::exception& e) {
+            ClientWarden::Log()->warn("AutoFill password lookup failed: {}", e.what());
             return @"";
         }
     };
 }
 
+/*
+ * Passkey creation and assertion aren't implemented in the vault yet.
+ * These used to report success with empty credentials; they now report
+ * failure (an empty string) so the extension can fall back cleanly.
+ */
 + (void)cb_createPasskey {
     SDKHandler.instance.cb_createPasskey = ^NSString* (NSString* info) {
-        try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
-
-            std::string c_info = info.UTF8String;
-
-            if (c_info == "") {
-                return @"";
-            }
-
-            std::vector<std::string> parts;
-
-            /*
-             * THis part is from claude, but the rest isnt
-             */
-            for (auto part : c_info | std::views::split(',')) {
-                parts.emplace_back(part.begin(), part.end());
-            }
-
-            if (parts.size() != 4) {
-                return @"";
-            }
-
-            std::string relyingPartyIdentifier = ClientWarden::b64DecodeString(parts[0]);
-            std::string userName = ClientWarden::b64DecodeString(parts[1]);
-            std::string userHandle = ClientWarden::b64DecodeString(parts[2]);
-            std::string clientDataHash = ClientWarden::b64DecodeString(parts[3]);
-
-            std::string credentialId = "";
-            std::string attestationObject = "";
-
-            bool res = v_inst.createPasskey(relyingPartyIdentifier, userName, userHandle, clientDataHash, credentialId, attestationObject);
-
-            if (!res) {
-                /*
-                 * Log an error here
-                 */
-                return @"";
-            }
-
-            std::string result = ClientWarden::b64EncodeString(credentialId) + "," + ClientWarden::b64EncodeString(attestationObject);
-
-            return [NSString stringWithUTF8String: result.c_str()];
-        } catch (...) {
-            /*
-             * Put an error thing for the log here
-             * DO NOT USE THE SWIFT TOASTS FOR THIS
-             */
-
-            return @"";
-        }
+        ClientWarden::Log()->info("AutoFill passkey creation is not supported yet");
+        return @"";
     };
 }
 
 + (void)cb_getPasskeys {
     SDKHandler.instance.cb_getPasskeys = ^NSString* (NSString* website) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
-
-            std::string c_website = website.UTF8String;
-
-            std::vector<std::string> ciphers;
-            
-            ciphers = v_inst.GetCipherQuery()
-                           ->FilterByUnbinned()
-                            .FilterByUnarchived()
-                            .FilterByType(ClientWarden::CipherType::Login)
-                            .FilterByPasskey()
-                            .Get();
-            
-            std::vector<std::string> matchedCips;
-
-            for (auto& cipher : ciphers) {
-                if (cipher == "") {
-                    continue;
-                }
-                
-                std::vector<std::string> websites;
-
-                v_inst.GetItem<ClientWarden::LoginItem>(cipher)
-                     ->GetWebsites(websites)
-                     ->Close();
-                
-                bool webMatched = false;
-                for (auto& l_website : websites) {
-                    if (compareURLs(l_website, c_website)) {
-                        webMatched = true;
-                        break;
-                    }
-                }
-
-                if (webMatched) {
-                    matchedCips.push_back(cipher);
-                }
-
-                websites.clear();
-            }
-
-            std::string result = boost::algorithm::join(matchedCips, ",");
-
-            return [NSString stringWithUTF8String: result.c_str()];
-        } catch (...) {
-            /*
-             * Put an error thing for the log here
-             * DO NOT USE THE SWIFT TOASTS FOR THIS
-             */
-
+            return MatchingLogins(website, true);
+        } catch (const std::exception& e) {
+            ClientWarden::Log()->warn("AutoFill passkey lookup failed: {}", e.what());
             return @"";
         }
     };
@@ -362,42 +168,8 @@ bool compareURLs(std::string url1, std::string url2) {
 
 + (void)cb_getPasskeyInfo {
     SDKHandler.instance.cb_getPasskeyInfo = ^NSString* (NSString* uuid) {
-        try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
-
-            std::string c_uuid = uuid.UTF8String;
-            std::transform(c_uuid.begin(), c_uuid.end(), c_uuid.begin(), ::tolower);
-
-            if (c_uuid == "") {
-                return @"";
-            }
-
-            std::string userHandle = "";
-            std::string signature = "";
-            std::string authenticatorData = "";
-            std::string credentialID = "";
-
-            bool res = v_inst.getPasskey(c_uuid, userHandle, signature, authenticatorData, credentialID);
-
-            if (!res) {
-                /*
-                 * Log an error here
-                 */
-                return @"";
-            }
-
-            std::string result = ClientWarden::b64EncodeString(userHandle) + "," + ClientWarden::b64EncodeString(signature) + "," +
-                ClientWarden::b64EncodeString(authenticatorData) + "," + ClientWarden::b64EncodeString(credentialID);
-
-            return [NSString stringWithUTF8String: result.c_str()];
-        } catch (...) {
-            /*
-             * Put an error thing for the log here
-             * DO NOT USE THE SWIFT TOASTS FOR THIS
-             */
-
-            return @"";
-        }
+        ClientWarden::Log()->info("AutoFill passkey assertion is not supported yet");
+        return @"";
     };
 }
 

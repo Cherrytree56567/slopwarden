@@ -15,15 +15,15 @@
 }
 
 /*
- * Query takes in a string and passes back an array of ItemElement
- * with all the items that match the search query
+ * Whether the server supports the item types added in 2026.8.1
+ * (bank accounts, driver's licences and passports).
  */
 + (void)cb_checkAbove26_8_1 {
     UIFeatures.instance.cb_checkAbove26_8_1 = ^BOOL() {
         try {
             ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
 
-            return (BOOL)v_inst.features.checkAbove26_8_1();
+            return (BOOL)v_inst.ServerAtLeast("2026.8.1");
         } catch (...) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 Toast* toast = [[Toast alloc] initWithMessage:@"Failed to check above 26.8.1"];

@@ -3,15 +3,6 @@
 #include <thread>
 #import "clientwarden-Swift.h"
 #include "Vault.h"
-#include "CBridge.h"
-
-extern "C" void SetLoginPage() {
-    ClientwardenWindow.instance.state = WindowStateLogin;
-}
-
-extern "C" void SetLockPage() {
-    ClientwardenWindow.instance.state = WindowStateUnlock;
-}
 
 @implementation CWAppBridge
 
@@ -21,9 +12,26 @@ extern "C" void SetLockPage() {
  * callbacks for that class.
  */
 + (void)setupCallbacks {
+    [self observeVault];
     [self cb_getState];
     [self cb_lock];
     [self cb_shutdown];
+}
+
+/*
+ * The vault reports state changes it makes on its own (auto-lock,
+ * remote logout, revoked session) so the window can follow.
+ */
++ (void)observeVault {
+    ClientWarden::Vault::Instance().OnStateChange([](ClientWarden::AuthState state) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (state == ClientWarden::AuthState::LoggedOut) {
+                ClientwardenWindow.instance.state = WindowStateLogin;
+            } else if (state == ClientWarden::AuthState::Unlockable) {
+                ClientwardenWindow.instance.state = WindowStateUnlock;
+            }
+        });
+    });
 }
 
 /*
@@ -36,9 +44,9 @@ extern "C" void SetLockPage() {
         try {
             ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
 
-            if (v_inst.state == ClientWarden::AuthState::Unlockable) {
+            if (v_inst.State() == ClientWarden::AuthState::Unlockable) {
                 return WindowStateUnlock;
-            } else if (v_inst.state == ClientWarden::AuthState::Unlocked) {
+            } else if (v_inst.State() == ClientWarden::AuthState::Unlocked) {
                 return WindowStateVault;
             } else {
                 return WindowStateLogin;
@@ -60,7 +68,8 @@ extern "C" void SetLockPage() {
     ClientwardenWindow.instance.cb_lock = ^BOOL {
         try {
             ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
-            return (BOOL)v_inst.Lock();
+            v_inst.Lock();
+            return YES;
         } catch (...) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 Toast* toast = [[Toast alloc] initWithMessage:@"Failed to Lock Vault"];

@@ -29,7 +29,8 @@
         try {
             ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
             
-            return (BOOL)v_inst.Logout();
+            v_inst.Logout();
+            return YES;
         } catch (...) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 Toast* toast = [[Toast alloc] initWithMessage:@"Failed to log out"];
@@ -46,7 +47,7 @@
         try {
             ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
             
-            return (BOOL)v_inst.GetScreenshotOption();
+            return (BOOL)v_inst.Preferences().AllowScreenshots();
         } catch (...) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 Toast* toast = [[Toast alloc] initWithMessage:@"Failed to get screenshot option"];
@@ -62,7 +63,7 @@
         try {
             ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
             
-            v_inst.SetScreenshotOption((bool)value);
+            v_inst.Preferences().SetAllowScreenshots((bool)value);
 
             return YES;
         } catch (...) {
@@ -81,7 +82,7 @@
         try {
             ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
             
-            return (BOOL)v_inst.checkVaultKeysKeychain();
+            return (BOOL)v_inst.BiometricsEnabled();
         } catch (...) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 Toast* toast = [[Toast alloc] initWithMessage:@"Failed to get biometric unlock value"];
@@ -97,13 +98,7 @@
         try {
             ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
 
-            if (value) {
-                return v_inst.saveVaultKeysKeychain();
-            } else {
-                return v_inst.deleteVaultKeysKeychain();
-            }
-
-            return YES;
+            return (BOOL)(value ? v_inst.EnableBiometrics() : v_inst.DisableBiometrics());
         } catch (...) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 Toast* toast = [[Toast alloc] initWithMessage:@"Failed to set biometric unlock"];
@@ -120,7 +115,7 @@
         try {
             ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
             
-            return (NSInteger)v_inst.GetAutoLockDelay();
+            return (NSInteger)v_inst.Preferences().AutoLockSeconds();
         } catch (...) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 Toast* toast = [[Toast alloc] initWithMessage:@"Failed to get Auto Lock Delay"];
@@ -136,7 +131,7 @@
         try {
             ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
             
-            v_inst.SetAutoLockDelay((int)value);
+            v_inst.Preferences().SetAutoLockSeconds((int)value);
 
             return YES;
         } catch (...) {

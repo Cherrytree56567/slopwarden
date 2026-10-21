@@ -63,7 +63,7 @@ final class SidePanel: NSObject {
      */
     @objc public var cb_favorite: ((Bool, UUID) -> Bool)?
     
-    @objc public var cb_duplicate: ((UUID, ItemType) -> ItemElement)?
+    @objc public var cb_duplicate: ((UUID, ItemType) -> ItemElement?)?
     @objc public var cb_delete: ((UUID) -> Bool)?
     @objc public var cb_save: ((UUID, String, ItemType, Bool, UUID, [GenericItemData], [FieldItemData], String) -> Bool)?
     
