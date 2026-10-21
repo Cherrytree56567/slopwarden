@@ -30,50 +30,26 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(Botan CONFIG REQUIRED)
 find_package(msgpack-cxx CONFIG REQUIRED)
 
-# The whole vault core except the production wiring (real network and
-# singleton), which tests replace with fakes.
-file(GLOB_RECURSE VAULT_SOURCES CONFIGURE_DEPENDS ../src/Vault/*.cpp)
-list(FILTER VAULT_SOURCES EXCLUDE REGEX ".*/(HttplibTransport|VaultInstance)\\.cpp$")
+add_subdirectory(../src/core core)
 
-add_executable(tests
-    test.cpp
-    crypto/crypto.cpp
-    crypto/generator.cpp
-    model/item.cpp
-    model/query.cpp
-    sync/merge.cpp
-    net/api.cpp
-    net/notifications.cpp
-    vault/vault.cpp
-    utils/utils.cpp
-    Storage/Storage.cpp
-    Clipboard/Clipboard.cpp
-    ${VAULT_SOURCES}
-)
-target_link_libraries(tests PRIVATE Catch2::Catch2WithMain spdlog::spdlog Boost::boost Boost::url nlohmann_json::nlohmann_json botan::botan msgpack-cxx keychain)
+# One test file per core class, mirroring src/core (tests/core/vault/crypto/crypto.cpp, ...).
+file(GLOB_RECURSE CORE_TESTS CONFIGURE_DEPENDS core/*.cpp support/*.cpp)
 
-if(APPLE)
-    set_target_properties(tests PROPERTIES
-        XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "-"
-        XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "YES"
-        XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "YES"
-    )
-endif()
-
-target_include_directories(tests PRIVATE
-    ../src/Vault
-    .
-)
-
-target_compile_definitions(tests PRIVATE MSGPACK_DISABLE_LEGACY_NIL)
+add_executable(core_tests main.cpp ${CORE_TESTS})
+target_link_libraries(core_tests PRIVATE Catch2::Catch2WithMain clientwarden_core)
+target_include_directories(core_tests PRIVATE .)
 
 if (APPLE)
-    add_custom_command(TARGET tests POST_BUILD
-        COMMAND codesign --force --deep --sign - $<TARGET_FILE:tests>
+    add_custom_command(TARGET core_tests POST_BUILD
+        COMMAND codesign --force --deep --sign - $<TARGET_FILE:core_tests>
         COMMENT "Sign Bin to prevent failure"
     )
 endif()
 
 include(CTest)
 include(Catch)
-catch_discover_tests(tests)
+catch_discover_tests(core_tests)
+
+# ADR 3: no std::string in the vault core outside the allowlisted library boundaries.
+add_test(NAME lint.no_std_string
+    COMMAND ${CMAKE_COMMAND} -DCORE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../src/core -P ${CMAKE_CURRENT_SOURCE_DIR}/lint/no_std_string.cmake)
