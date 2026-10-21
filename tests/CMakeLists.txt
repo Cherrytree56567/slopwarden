@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.16)
 
 project(ClientWarden.Tests LANGUAGES CXX VERSION 0.0.1)
 
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 Include(FetchContent)
 
 # From Catch2 Docs
@@ -21,43 +24,35 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(Catch2)
 FetchContent_MakeAvailable(keychain)
 
-find_package(OpenSSL REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
-find_package(Boost REQUIRED)
 find_package(Boost REQUIRED COMPONENTS url)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(Botan CONFIG REQUIRED)
 find_package(msgpack-cxx CONFIG REQUIRED)
 
-set(FILES
-    ../src/Vault/CardItem/CardItem.cpp
-    ../src/Vault/CipherQuery/CipherQuery.cpp
-    ../src/Vault/CWThread/CWThread.cpp
-    ../src/Vault/Folder/Folder.cpp
-    ../src/Vault/GenericItem/GenericItem.cpp
-    ../src/Vault/IdentityItem/IdentityItem.cpp
-    ../src/Vault/LoginItem/LoginItem.cpp
-    ../src/Vault/NoteItem/NoteItem.cpp
-    ../src/Vault/PasswordGenerator/PasswordGenerator.cpp
-    ../src/Vault/SSHKeyItem/SSHKeyItem.cpp
-    ../src/Vault/VaultCrypto/VaultCrypto.cpp
-    ../src/Vault/VaultNetwork/VaultNetwork.cpp
-    ../src/Vault/VaultProfile/VaultProfile.cpp
-    ../src/Vault/VaultSession/VaultSession.cpp
-    ../src/Vault/VaultUtils/VaultUtils.cpp
-    ../src/Vault/Vault.cpp
+# The whole vault core except the production wiring (real network and
+# singleton), which tests replace with fakes.
+file(GLOB_RECURSE VAULT_SOURCES CONFIGURE_DEPENDS ../src/Vault/*.cpp)
+list(FILTER VAULT_SOURCES EXCLUDE REGEX ".*/(HttplibTransport|VaultInstance)\\.cpp$")
+
+add_executable(tests
+    test.cpp
+    crypto/crypto.cpp
+    crypto/generator.cpp
+    model/item.cpp
+    model/query.cpp
+    sync/merge.cpp
+    net/api.cpp
+    net/notifications.cpp
+    vault/vault.cpp
+    utils/utils.cpp
     Storage/Storage.cpp
     Clipboard/Clipboard.cpp
-    httplib/httplib.cpp
+    ${VAULT_SOURCES}
 )
-
-
-add_executable(tests test.cpp crypto/crypto.cpp crypto/crypto_fail.cpp network/network.cpp utils/utils.cpp ${FILES})
-target_link_libraries(tests PRIVATE Catch2::Catch2WithMain OpenSSL::Crypto OpenSSL::SSL spdlog::spdlog Boost::boost Boost::url nlohmann_json::nlohmann_json botan::botan msgpack-cxx keychain)
+target_link_libraries(tests PRIVATE Catch2::Catch2WithMain spdlog::spdlog Boost::boost Boost::url nlohmann_json::nlohmann_json botan::botan msgpack-cxx keychain)
 
 if(APPLE)
-    find_library(CFNETWORK_FRAMEWORK CFNetwork REQUIRED)
-    target_link_libraries(tests PRIVATE ${CFNETWORK_FRAMEWORK})
     set_target_properties(tests PROPERTIES
         XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "-"
         XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "YES"
@@ -65,9 +60,8 @@ if(APPLE)
     )
 endif()
 
-target_include_directories(tests PUBLIC
+target_include_directories(tests PRIVATE
     ../src/Vault
-    httplib
     .
 )
 

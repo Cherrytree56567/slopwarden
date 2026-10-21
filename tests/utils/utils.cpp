@@ -1,45 +1,35 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
-#include <catch2/generators/catch_generators_range.hpp>
-#include "VaultUtils/VaultUtils.h"
+#include "Util/Util.h"
 
-TEST_CASE("Base 64 Encode Test") {
-    Botan::secure_vector<uint8_t> og = {
-        'C', 'l', '1', 'e', 'n', 't', 'W', '@', 'r', '\\', 'e', 'n'
-    };
+using namespace ClientWarden;
 
-    std::string result = ClientWarden::b64Encode(og);
-
-    REQUIRE(result == "Q2wxZW50V0ByXGVu");
+TEST_CASE("ParseTime reads Bitwarden timestamps") {
+    REQUIRE(ParseTime("2026-08-22T06:53:51.78Z") == 1787381631);
+    REQUIRE(ParseTime("2026-08-22T06:53:51Z") == 1787381631);
+    REQUIRE(ParseTime("2026-08-22T06:53:51.1234567") == 1787381631);
 }
 
-TEST_CASE("Base 64 Decode Test") {
-    Botan::secure_vector<uint8_t> og = {
-        'C', 'l', '1', 'e', 'n', 't', 'W', '@', 'r', '\\', 'e', 'n'
-    };
-
-    Botan::secure_vector<uint8_t> result = ClientWarden::b64Decode("Q2wxZW50V0ByXGVu");
-
-    REQUIRE(result == og);
+TEST_CASE("ParseTime returns 0 for garbage instead of throwing") {
+    auto input = GENERATE("", "yesterday", "2026-13", "T06:53:51");
+    REQUIRE(ParseTime(input) == 0);
 }
 
-TEST_CASE("getBitwardenTime/BitwardenTime Test") {
-    int i = GENERATE(range(0, 10));
-    CAPTURE(i);
-    
-    std::time_t t1 = std::time(nullptr);
+TEST_CASE("NowTime round trips through ParseTime") {
+    std::time_t before = std::time(nullptr);
+    std::time_t parsed = ParseTime(NowTime());
+    REQUIRE(parsed >= before);
+    REQUIRE(parsed <= std::time(nullptr));
 
-    std::string res = ClientWarden::getBitwardenTime();
-    std::time_t result = ClientWarden::BitwardenTime(res);
-
-    std::time_t t2 = std::time(nullptr);
-
-    REQUIRE(result >= t1);
-    REQUIRE(result <= t2);
+    REQUIRE(ParseTime(NowTime(3600)) >= before + 3600);
 }
 
-TEST_CASE("BitwardenTime Test") {
-    std::time_t result = ClientWarden::BitwardenTime("2026-08-22T06:53:51.78Z");
+TEST_CASE("FormatTime is UTC ISO-8601") {
+    REQUIRE(FormatTime(1787381631) == "2026-08-22T06:53:51.000Z");
+}
 
-    REQUIRE(result == 1787381631);
+TEST_CASE("NewGuid is unique and well formed") {
+    std::string a = NewGuid();
+    REQUIRE(a.size() == 36);
+    REQUIRE(a != NewGuid());
 }
