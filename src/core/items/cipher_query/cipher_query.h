@@ -1,6 +1,7 @@
 #pragma once
 #include <ctime>
 #include <functional>
+#include <optional>
 #include <memory>
 #include <string_view>
 #include <vector>
@@ -30,6 +31,12 @@ namespace clientwarden {
     class CipherQuery {
     public:
         /**
+         * @brief Returns the key a cipher's own key is wrapped with: the user key for personal
+         * items, the organisation key for organisation items, nullopt if unavailable.
+         */
+        using KeyResolver = std::function<std::optional<SymmetricKey>(const Json&)>;
+
+        /**
          * @brief Creates a query over some records.
          *
          * @param records The ciphers to filter
@@ -38,6 +45,16 @@ namespace clientwarden {
          */
         CipherQuery(
                 std::vector<Record> records, std::shared_ptr<Crypto> crypto, SymmetricKey user_key);
+
+        /**
+         * @brief Creates a query that can also decrypt organisation item names.
+         *
+         * @param records The ciphers to filter
+         * @param crypto For decrypting names
+         * @param resolver Finds the wrapping key for each cipher
+         */
+        CipherQuery(
+                std::vector<Record> records, std::shared_ptr<Crypto> crypto, KeyResolver resolver);
 
         /**
          * @brief Keeps one type.
@@ -89,6 +106,29 @@ namespace clientwarden {
          * @return This query, for chaining
          */
         CipherQuery& inFolder(std::string_view folder_id);
+
+        /**
+         * @brief Keeps items owned by an organisation.
+         *
+         * @param organization_id The organisation id
+         * @return This query, for chaining
+         */
+        CipherQuery& inOrganization(std::string_view organization_id);
+
+        /**
+         * @brief Keeps items in a collection.
+         *
+         * @param collection_id The collection id
+         * @return This query, for chaining
+         */
+        CipherQuery& inCollection(std::string_view collection_id);
+
+        /**
+         * @brief Keeps items the user owns personally (not in any organisation).
+         *
+         * @return This query, for chaining
+         */
+        CipherQuery& personal();
 
         /**
          * @brief Keeps logins with at least one passkey.
@@ -151,7 +191,7 @@ namespace clientwarden {
 
         std::vector<Record> m_records_;
         std::shared_ptr<Crypto> m_crypto_;
-        SymmetricKey m_user_key_;
+        KeyResolver m_resolver_;
         std::vector<std::function<bool(const Json&)>> m_predicates_;
         SecureString m_needle_;
     };

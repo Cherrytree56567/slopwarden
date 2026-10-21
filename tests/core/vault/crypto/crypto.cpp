@@ -263,3 +263,26 @@ TEST_CASE("Crypto::randomBelow stays in range and covers it") {
     }
     REQUIRE_THROWS_AS(c_crypto.randomBelow(0), CryptoError);
 }
+
+TEST_CASE("RSA-OAEP round trip as Bitwarden type 4") {
+    Crypto crypto;
+    RsaKeyPair pair = crypto.generateRsaKeyPair();
+    SymmetricKey organization_key = SymmetricKey::generate();
+
+    SecureString wrapped = crypto.rsaEncrypt(organization_key.combined(), pair.m_public_key);
+    REQUIRE(wrapped.starts_with("4."));
+    REQUIRE(crypto.rsaDecrypt(wrapped, pair.m_private_key) == organization_key.combined());
+}
+
+TEST_CASE("RSA decryption rejects other keys, types and garbage") {
+    Crypto crypto;
+    RsaKeyPair pair = crypto.generateRsaKeyPair();
+    RsaKeyPair other = crypto.generateRsaKeyPair();
+    SecureString wrapped = crypto.rsaEncrypt(encoding::bytesOf("secret"), pair.m_public_key);
+
+    REQUIRE_THROWS_AS(crypto.rsaDecrypt(wrapped, other.m_private_key), CryptoError);
+    REQUIRE_THROWS_AS(crypto.rsaDecrypt(SecureString("2.") + wrapped.substr(2), pair.m_private_key), CryptoError);
+    REQUIRE_THROWS_AS(crypto.rsaDecrypt("4.AAAA", pair.m_private_key), CryptoError);
+    REQUIRE_THROWS_AS(crypto.rsaDecrypt(wrapped, SecureBytes { 1, 2, 3 }), CryptoError);
+    REQUIRE_THROWS_AS(crypto.rsaEncrypt(encoding::bytesOf("x"), SecureBytes { 1, 2, 3 }), CryptoError);
+}

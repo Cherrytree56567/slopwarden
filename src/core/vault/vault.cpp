@@ -54,6 +54,10 @@ namespace clientwarden {
     std::shared_ptr<Orchestrator> Vault::getOrchestrator() const {
         return m_orchestrator_;
     }
+    std::shared_ptr<Organizations> Vault::getOrganizations() const {
+        return m_organizations_;
+    }
+
     std::shared_ptr<Generator> Vault::getGenerator() const {
         return m_generator_;
     }

@@ -47,9 +47,12 @@ namespace clientwarden {
                 m_crypto_, m_network_, m_store_, m_session_, m_features_, m_sync_, files);
         m_autofill_ = std::make_shared<AutoFill>(m_orchestrator_, m_store_);
         m_generator_ = std::make_shared<Generator>(m_crypto_, loadWordList_(std::move(resources)));
+        m_organizations_ =
+                std::make_shared<Organizations>(m_crypto_, m_network_, m_store_, m_session_);
 
         m_session_->onRevoked([this]() { post_([this]() { logout(); }); });
         m_sync_->onAccountKeyChanged([this]() { post_([this]() { logout(); }); });
+        m_sync_->onSynced([this]() { loadOrganizationKeys_(); });
         m_orchestrator_->onSyncRequested([this]() { requestSync_(); });
         m_orchestrator_->onIntegrityFailure([this](std::string_view reason) {
             /*
@@ -85,6 +88,7 @@ namespace clientwarden {
         m_orchestrator_->onSyncRequested(nullptr);
         m_session_->onRevoked(nullptr);
         m_sync_->onAccountKeyChanged(nullptr);
+        m_sync_->onSynced(nullptr);
         m_session_->clearKeys();
     }
 
@@ -295,7 +299,23 @@ namespace clientwarden {
         return UnlockResult::Success;
     }
 
+    void BitwardenVault::loadOrganizationKeys_() {
+        /*
+         * Memberships and their keys come with each sync; reload them whenever unlocked so new
+         * organisations show up and removed ones disappear.
+         */
+        if (!m_session_->hasKeys()) {
+            return;
+        }
+        try {
+            m_organizations_->loadKeys();
+        } catch (const VaultError& e) {
+            Logger::get()->warn("Couldn't load organisation keys: {}", e.what());
+        }
+    }
+
     void BitwardenVault::onUnlocked_() {
+        loadOrganizationKeys_();
         m_last_activity_ = std::time(nullptr);
         setState_(VaultState::Unlocked);
         startNotifications_();
@@ -512,8 +532,7 @@ namespace clientwarden {
                                          for (PushType type : parseNotificationFrame(frame)) {
                                              if (type == PushType::LogOut) {
                                                  post_([this]() { logout(); });
-                                             } else if (type != PushType::SyncOrgKeys &&
-                                                        type != PushType::SyncSettings) {
+                                             } else if (type != PushType::SyncSettings) {
                                                  requestSync_();
                                              }
                                          }

@@ -12,6 +12,7 @@
 #include "platform/http/http.h"
 #include "platform/secret_store/secret_store.h"
 #include "utils/encoding/encoding.h"
+#include "utils/errors/errors.h"
 #include "utils/timestamp/timestamp.h"
 #include "utils/uuid/uuid.h"
 #include "vault/crypto/crypto.h"
@@ -111,6 +112,24 @@ namespace clientwarden::testing {
         std::map<SecureString, SecureBytes> m_blobs;
         Json m_domains = Json::object();
 
+        /**
+         * @brief An organisation the account belongs to.
+         */
+        struct FakeOrganization {
+            SecureString m_id;
+            SecureString m_name;
+            SymmetricKey m_key;
+            int m_type = 0;
+            SecureString m_user_id;
+            Json m_permissions = Json::object();
+        };
+
+        RsaKeyPair m_rsa;
+        SecureString m_encrypted_private_key;
+        std::vector<FakeOrganization> m_organizations;
+        std::map<SecureString, Json> m_collections;
+        bool m_collections_v2 = true;   // false: only the older /collections route exists
+
         std::mutex m_mutex;
         std::vector<HttpRequest> m_requests;
 
@@ -122,6 +141,8 @@ namespace clientwarden::testing {
             m_user_key = SymmetricKey::generate();
             m_protected_key = m_crypto.wrapKey(m_user_key, m_crypto.stretchMasterKey(m_master_key));
             m_password_hash = m_crypto.hashMasterPassword(m_master_key, m_password);
+            m_rsa = m_crypto.generateRsaKeyPair();
+            m_encrypted_private_key = m_crypto.encrypt(m_rsa.m_private_key, m_user_key);
         }
 
         /**
@@ -168,8 +189,63 @@ namespace clientwarden::testing {
          * @return The profile JSON
          */
         Json profile() const {
+            Json organizations = Json::array();
+            for (const FakeOrganization& organization : m_organizations) {
+                organizations.push_back({ { "id", organization.m_id }, { "name", organization.m_name },
+                    { "key", m_crypto.rsaEncrypt(organization.m_key.combined(), m_rsa.m_public_key) },
+                    { "type", organization.m_type }, { "enabled", true }, { "status", 2 },
+                    { "organizationUserId", organization.m_user_id }, { "permissions", organization.m_permissions } });
+            }
             return { { "id", "user-1" }, { "name", "Test User" }, { "email", m_email }, { "key", m_protected_key },
-                { "premium", true } };
+                { "premium", true }, { "privateKey", m_encrypted_private_key }, { "organizations", organizations } };
+        }
+
+        /**
+         * @brief Adds an organisation the account belongs to.
+         *
+         * @param name Its name
+         * @param type The member's role (0 owner, 2 user)
+         * @return The organisation id
+         */
+        SecureString addOrganization(std::string_view name, int type) {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            FakeOrganization organization { SecureString("org-") + uuid::generate(), SecureString(name),
+                SymmetricKey::generate(), type, SecureString("orguser-") + uuid::generate() };
+            m_organizations.push_back(organization);
+            return organization.m_id;
+        }
+
+        /**
+         * @brief An organisation's key.
+         *
+         * @param id The organisation id
+         * @return Its key
+         */
+        SymmetricKey organizationKey(std::string_view id) {
+            for (FakeOrganization& organization : m_organizations) {
+                if (organization.m_id == id) {
+                    return organization.m_key;
+                }
+            }
+            throw VaultError("no such organisation");
+        }
+
+        /**
+         * @brief Adds a collection the account can see.
+         *
+         * @param organization_id The organisation
+         * @param name The plaintext name
+         * @param read_only Items in it can't be edited
+         * @return The collection id
+         */
+        SecureString addCollection(std::string_view organization_id, std::string_view name, bool read_only) {
+            SymmetricKey key = organizationKey(organization_id);
+            std::lock_guard<std::mutex> lock(m_mutex);
+            SecureString id = SecureString("col-") + uuid::generate();
+            m_collections[id] = { { "id", id }, { "organizationId", SecureString(organization_id) },
+                { "name", m_crypto.encryptText(name, key) }, { "readOnly", read_only }, { "hidePasswords", false },
+                { "manage", !read_only }, { "object", "collectionDetails" } };
+            return id;
         }
 
         /**
@@ -244,8 +320,22 @@ namespace clientwarden::testing {
                 }
                 return respond_(200, Json());
             }
+            if (path == "/api/ciphers/create" && request.m_method == HttpMethod::Post) {
+                Json cipher = at(body, "cipher");
+                if (!at(cipher, "organizationId").is_string() || at(body, "collectionIds").empty()) {
+                    return respond_(400, { { "message", "organisation and collections required" } });
+                }
+                cipher["id"] = SecureString("srv-") + uuid::generate();
+                cipher["revisionDate"] = timestamp::now();
+                cipher["collectionIds"] = at(body, "collectionIds");
+                m_ciphers[cipher["id"].get<SecureString>()] = cipher;
+                return respond_(200, cipher);
+            }
             if (path.starts_with("/api/ciphers/")) {
                 return cipher_(request, std::move(body));
+            }
+            if (path.starts_with("/api/organizations/")) {
+                return organization_(request, std::move(body));
             }
             if (path == "/api/folders" && request.m_method == HttpMethod::Post) {
                 Json folder = { { "id", SecureString("srv-") + uuid::generate() }, { "name", at(body, "name") },
@@ -342,12 +432,76 @@ namespace clientwarden::testing {
             for (std::pair<const SecureString, Json>& folder : m_folders) {
                 folders.push_back(folder.second);
             }
-            return { { "profile", profile() }, { "ciphers", ciphers }, { "folders", folders }, { "domains", m_domains } };
+            Json collections = Json::array();
+            for (std::pair<const SecureString, Json>& collection : m_collections) {
+                collections.push_back(collection.second);
+            }
+
+            /*
+             * Like the real server, an organisation item is read-only when every collection
+             * the user reaches it through is read-only.
+            */
+            for (Json& cipher : ciphers) {
+                if (!at(cipher, "organizationId").is_string()) {
+                    continue;
+                }
+                bool editable = false;
+                for (const Json& id : at(cipher, "collectionIds")) {
+                    std::map<SecureString, Json>::iterator found = m_collections.find(id.get<SecureString>());
+                    if (found != m_collections.end() && !found->second["readOnly"].get<bool>()) {
+                        editable = true;
+                    }
+                }
+                cipher["edit"] = editable;
+            }
+            return { { "profile", profile() }, { "ciphers", ciphers }, { "folders", folders },
+                { "collections", collections }, { "domains", m_domains } };
         }
 
         /**
          * @brief Handles /api/ciphers/{id}[/action].
          */
+        HttpResponse organization_(HttpRequest request, Json body) {
+            SecureString rest = request.m_path.substr(19);   // after /api/organizations/
+            SecureString organization_id = rest.substr(0, rest.find('/'));
+            SecureString tail = rest.substr(organization_id.size());
+            if (!tail.starts_with("/collections")) {
+                return respond_(404, Json());
+            }
+            SecureString collection = tail.size() > 13 ? tail.substr(13) : SecureString();
+            bool details = collection.ends_with("/details");
+            if (details) {
+                collection = collection.substr(0, collection.size() - 8);
+            }
+
+            if (collection.empty() && request.m_method == HttpMethod::Post) {
+                SecureString id = SecureString("col-") + uuid::generate();
+                m_collections[id] = { { "id", id }, { "organizationId", organization_id }, { "name", at(body, "name") },
+                    { "readOnly", false }, { "hidePasswords", false }, { "manage", true },
+                    { "users", at(body, "users") }, { "groups", at(body, "groups") } };
+                return respond_(200, m_collections[id]);
+            }
+            if (!m_collections.contains(collection)) {
+                return respond_(404, Json());
+            }
+            Json& stored = m_collections[collection];
+            if (details) {
+                return respond_(200, { { "id", collection }, { "groups", Json::array({ { { "id", "group-1" } } }) },
+                    { "users", Json::array({ { { "id", "orguser-x" } } }) } });
+            }
+            if (request.m_method == HttpMethod::Put) {
+                stored["name"] = at(body, "name");
+                stored["users"] = at(body, "users");
+                stored["groups"] = at(body, "groups");
+                return respond_(200, stored);
+            }
+            if (request.m_method == HttpMethod::Delete) {
+                m_collections.erase(collection);
+                return respond_(200, Json());
+            }
+            return respond_(404, Json());
+        }
+
         HttpResponse cipher_(HttpRequest request, Json body) {
             SecureString rest = request.m_path.substr(13);
             SecureString id = rest.substr(0, rest.find('/'));
@@ -366,6 +520,30 @@ namespace clientwarden::testing {
             if (action.empty() && request.m_method == HttpMethod::Delete) {
                 m_ciphers.erase(id);
                 return respond_(200, Json());
+            }
+            if (action == "share" && request.m_method == HttpMethod::Put) {
+                Json shared = at(body, "cipher");
+                shared["id"] = id;
+                shared["revisionDate"] = timestamp::now();
+                shared["collectionIds"] = at(body, "collectionIds");
+                const Json& updates = at(shared, "attachments2");
+                if (updates.is_object() && shared["attachments"].is_array()) {
+                    for (Json& attachment : shared["attachments"]) {
+                        const Json& update = at(updates, stringAt(attachment, "id"));
+                        if (update.is_object()) {
+                            attachment["fileName"] = at(update, "fileName");
+                            attachment["key"] = at(update, "key");
+                        }
+                    }
+                }
+                shared.erase("attachments2");
+                cipher = shared;
+                return respond_(200, cipher);
+            }
+            if ((action == "collections_v2" && m_collections_v2) || action == "collections") {
+                cipher["collectionIds"] = at(body, "collectionIds");
+                cipher["revisionDate"] = timestamp::now();
+                return respond_(200, { { "cipher", cipher }, { "unavailable", false } });
             }
             if (action == "delete") {
                 cipher["deletedDate"] = timestamp::now();

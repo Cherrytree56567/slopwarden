@@ -75,6 +75,7 @@ namespace clientwarden {
         LoginResult completeLogin_(TokenResponse token);
         UnlockResult unlockWithMasterKey_(SecureBytes master_key);
         void onUnlocked_();
+        void loadOrganizationKeys_();
         void post_(std::function<void()> task);
         void requestSync_();
         void workerLoop_(std::stop_token stop);

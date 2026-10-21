@@ -62,21 +62,44 @@ namespace clientwarden {
         return *record;
     }
 
+    SymmetricKey Orchestrator::organizationKey_(std::string_view organization_id) {
+        m_session_->getUserKey(); // throws if locked
+        std::optional<SymmetricKey> key = m_session_->getOrganizationKey(organization_id);
+        if (!key) {
+            throw VaultError("organisation key unavailable");
+        }
+        return *key;
+    }
+
+    std::optional<SymmetricKey> Orchestrator::wrappingKeyFor_(const Json& cipher) {
+        SecureString organization = stringAt(cipher, "organizationId");
+        if (organization.empty()) {
+            return m_session_->getUserKey();
+        }
+        return m_session_->getOrganizationKey(organization);
+    }
+
     SymmetricKey Orchestrator::itemKeyFor_(const Json& cipher) {
-        SymmetricKey user_key = m_session_->getUserKey();
-        SecureString wrapped = stringAt(cipher, "key");
-        if (wrapped.empty()) {
-            return user_key; // older ciphers are encrypted directly with the user key
+        std::optional<SymmetricKey> wrapping = wrappingKeyFor_(cipher);
+        if (!wrapping) {
+            throw VaultError("organisation key unavailable");
         }
 
-        if (organisationCipher_(cipher)) {
-            throw VaultError("organisation items are not supported yet");
+        SecureString wrapped = stringAt(cipher, "key");
+        if (wrapped.empty()) {
+            return *wrapping; // older ciphers are encrypted directly with the user/org key
         }
         try {
-            return m_crypto_->unwrapKey(wrapped, user_key);
+            return m_crypto_->unwrapKey(wrapped, *wrapping);
         } catch (const CryptoError&) {
             reportIntegrityFailure("an item key failed authentication");
             throw;
+        }
+    }
+
+    void Orchestrator::requireEditable_(GenericItem& item) {
+        if (!item.canEdit()) {
+            throw VaultError("this item is read-only");
         }
     }
 
@@ -100,20 +123,42 @@ namespace clientwarden {
     }
 
     CipherQuery Orchestrator::query() {
-        return CipherQuery(m_store_->getCiphers(), m_crypto_, m_session_->getUserKey());
+        m_session_->getUserKey(); // throws if locked
+        std::shared_ptr<Session> session = m_session_;
+        return CipherQuery(m_store_->getCiphers(), m_crypto_,
+                [session](const Json& cipher) -> std::optional<SymmetricKey> {
+                    SecureString organization = stringAt(cipher, "organizationId");
+                    if (organization.empty()) {
+                        return session->getUserKey();
+                    }
+                    return session->getOrganizationKey(organization);
+                });
     }
 
     bool Orchestrator::saveItem(GenericItem& item) {
         m_session_->getUserKey(); // throws if locked
+        requireEditable_(item);
         item.touch();
 
         SecureString id = item.getId();
         Record existing = m_store_->getCipher(id);
         bool is_new = !existing || createdOffline_(*existing);
+        bool organization = item.getOrganizationId().has_value();
         Json wire = Schema::wireFormat(item.getJson(), m_features_->needsLegacyData());
 
-        std::optional<Json> result =
-                is_new ? m_network_->createCipher(wire) : m_network_->updateCipher(wire);
+        std::optional<Json> result;
+        if (is_new && organization) {
+            result = m_network_->createOrganizationCipher(wire, item.getCollectionIds());
+            if (!result) {
+                /*
+                 * The server must place organisation items in collections, so they can't be
+                 * queued offline like personal ones.
+                 */
+                throw VaultError("organisation items can only be created while online");
+            }
+        } else {
+            result = is_new ? m_network_->createCipher(wire) : m_network_->updateCipher(wire);
+        }
         if (result && !stringAt(*result, "id").empty()) {
             if (is_new && existing && stringAt(*result, "id") != id) {
                 m_store_->removeCipher(id, false);
@@ -137,6 +182,7 @@ namespace clientwarden {
     }
 
     bool Orchestrator::deleteItem(GenericItem& item) {
+        requireEditable_(item);
         SecureString id = item.getId();
         Record existing = m_store_->getCipher(id);
         if (!existing) {
@@ -162,11 +208,13 @@ namespace clientwarden {
     }
 
     bool Orchestrator::binItem(GenericItem& item) {
+        requireEditable_(item);
         item.markDeleted(true);
         return commitStatus_(item, m_network_->softDeleteCipher(item.getId()));
     }
 
     bool Orchestrator::restoreItem(GenericItem& item) {
+        requireEditable_(item);
         item.markDeleted(false);
         return commitStatus_(item, m_network_->restoreCipher(item.getId()));
     }
@@ -182,11 +230,68 @@ namespace clientwarden {
     }
 
     SecureString Orchestrator::duplicateItem(GenericItem& item) {
-        Json copy = item.duplicateJson(m_session_->getUserKey());
+        /*
+         * A copy of an organisation item stays in the same organisation and collections.
+         */
+        std::optional<SymmetricKey> wrapping = wrappingKeyFor_(item.getJson());
+        if (!wrapping) {
+            throw VaultError("organisation key unavailable");
+        }
+        Json copy = item.duplicateJson(*wrapping);
         SymmetricKey key = itemKeyFor_(copy);
         GenericItem duplicate(shared_from_this(), m_crypto_, std::move(copy), std::move(key));
         saveItem(duplicate);
         return duplicate.getId();
+    }
+
+    bool Orchestrator::shareItem(GenericItem& item, std::string_view organization_id,
+            std::vector<SecureString> collection_ids) {
+        if (item.getOrganizationId()) {
+            throw VaultError("the item already belongs to an organisation");
+        }
+        if (collection_ids.empty()) {
+            throw VaultError("choose at least one collection");
+        }
+        Record existing = m_store_->getCipher(item.getId());
+        if (!existing || createdOffline_(*existing)) {
+            throw VaultError("save the item online before moving it to an organisation");
+        }
+
+        Json shared =
+                item.sharedJson(organization_id, organizationKey_(organization_id), collection_ids);
+        Json wire = Schema::wireFormat(shared, m_features_->needsLegacyData());
+        std::optional<Json> result = m_network_->shareCipher(item.getId(), wire, collection_ids);
+        if (!result || stringAt(*result, "id").empty()) {
+            return false;
+        }
+
+        Json updated = *result;
+        updated.erase("attachments2");
+        item.replaceJson(updated);
+        m_store_->putCipher(std::move(updated));
+        return true;
+    }
+
+    bool Orchestrator::updateItemCollections(
+            GenericItem& item, std::vector<SecureString> collection_ids) {
+        if (!item.getOrganizationId()) {
+            throw VaultError("only organisation items are in collections");
+        }
+        if (collection_ids.empty()) {
+            throw VaultError("choose at least one collection");
+        }
+        if (!m_network_->updateCipherCollections(item.getId(), collection_ids)) {
+            return false;
+        }
+
+        Json updated = item.getJson();
+        updated["collectionIds"] = collection_ids;
+        item.replaceJson(updated);
+        m_store_->putCipher(std::move(updated));
+        if (m_on_sync_requested_) {
+            m_on_sync_requested_(); // the server may change edit permissions
+        }
+        return true;
     }
 
     std::optional<SecureString> Orchestrator::addAttachment(GenericItem& item,

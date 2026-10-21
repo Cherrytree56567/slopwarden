@@ -48,6 +48,14 @@ namespace clientwarden {
     };
 
     /**
+     * @brief An RSA-2048 key pair as Bitwarden stores it.
+     */
+    struct RsaKeyPair {
+        SecureBytes m_private_key; // PKCS#8 DER
+        SecureBytes m_public_key;  // SubjectPublicKeyInfo DER
+    };
+
+    /**
      * @brief Key derivation function chosen by the account.
      */
     enum class KdfType { Pbkdf2 = 0, Argon2id = 1 };
@@ -226,6 +234,36 @@ namespace clientwarden {
          * @return The random value
          */
         uint32_t randomBelow(uint32_t bound) const;
+
+        /**
+         * @brief Generates an RSA-2048 key pair (account and organisation sharing keys).
+         *
+         * @return The key pair
+         */
+        RsaKeyPair generateRsaKeyPair() const;
+
+        /**
+         * @brief Encrypts to an RSA public key as a type 4 encrypted string
+         * ("4.<b64 RSA-OAEP-SHA1 ciphertext>"), the format used to share organisation keys.
+         *
+         * @param plaintext The data (at most 214 bytes for RSA-2048)
+         * @param public_key The recipient's SubjectPublicKeyInfo DER
+         * @return The encrypted string
+         * @throws CryptoError if the key is malformed
+         */
+        SecureString rsaEncrypt(
+                std::span<const uint8_t> plaintext, std::span<const uint8_t> public_key) const;
+
+        /**
+         * @brief Decrypts a type 3 (RSA-OAEP-SHA256) or type 4 (RSA-OAEP-SHA1) encrypted string.
+         *
+         * @param enc_string The encrypted string
+         * @param private_key The PKCS#8 DER private key
+         * @return The plaintext
+         * @throws CryptoError on any other type, a malformed key, or a decryption failure
+         */
+        SecureBytes rsaDecrypt(
+                std::string_view enc_string, std::span<const uint8_t> private_key) const;
 
         /**
          * @brief SHA-256 of some data.

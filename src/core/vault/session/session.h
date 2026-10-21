@@ -1,6 +1,7 @@
 #pragma once
 #include <ctime>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -142,6 +143,21 @@ namespace clientwarden {
         SymmetricKey getUserKey() const;
 
         /**
+         * @brief Holds the decrypted organisation keys (memory only, wiped on lock).
+         *
+         * @param keys Organisation id -> organisation key
+         */
+        void setOrganizationKeys(std::map<SecureString, SymmetricKey, std::less<>> keys);
+
+        /**
+         * @brief An organisation's key.
+         *
+         * @param organization_id The organisation id
+         * @return The key, or nullopt if locked or not a member
+         */
+        std::optional<SymmetricKey> getOrganizationKey(std::string_view organization_id) const;
+
+        /**
          * @brief Constant-time check of a candidate master key against the unlocked one.
          *
          * @param candidate A freshly derived master key
@@ -200,5 +216,6 @@ namespace clientwarden {
         mutable std::shared_mutex m_key_mutex_;
         SecureBytes m_master_key_;
         SymmetricKey m_user_key_;
+        std::map<SecureString, SymmetricKey, std::less<>> m_organization_keys_;
     };
 }

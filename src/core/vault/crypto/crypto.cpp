@@ -6,7 +6,13 @@
 #include <botan/exceptn.h>
 #include <botan/hash.h>
 #include <botan/mac.h>
+#include <botan/data_src.h>
+#include <botan/pk_keys.h>
+#include <botan/pkcs8.h>
+#include <botan/pubkey.h>
 #include <botan/pwdhash.h>
+#include <botan/rsa.h>
+#include <botan/x509_key.h>
 #include <botan/system_rng.h>
 
 #include "utils/encoding/encoding.h"
@@ -325,5 +331,49 @@ namespace clientwarden {
         std::shared_ptr<Botan::HashFunction> hash = Botan::HashFunction::create_or_throw("SHA-256");
         hash->update(data.data(), data.size());
         return hash->final();
+    }
+
+    RsaKeyPair Crypto::generateRsaKeyPair() const {
+        Botan::RSA_PrivateKey key(Botan::system_rng(), 2048);
+        RsaKeyPair pair;
+        pair.m_private_key = Botan::PKCS8::BER_encode(key);
+        std::vector<uint8_t> public_key = key.subject_public_key();
+        pair.m_public_key.assign(public_key.begin(), public_key.end());
+        return pair;
+    }
+
+    SecureString Crypto::rsaEncrypt(
+            std::span<const uint8_t> plaintext, std::span<const uint8_t> public_key) const {
+        try {
+            std::shared_ptr<Botan::Public_Key> key = Botan::X509::load_key(public_key);
+            Botan::PK_Encryptor_EME encryptor(*key, Botan::system_rng(), "OAEP(SHA-1)");
+            std::vector<uint8_t> ciphertext =
+                    encryptor.encrypt(plaintext.data(), plaintext.size(), Botan::system_rng());
+            return SecureString("4.") + encoding::base64Encode(ciphertext);
+        } catch (const Botan::Exception&) {
+            throw CryptoError("invalid RSA public key");
+        }
+    }
+
+    SecureBytes Crypto::rsaDecrypt(
+            std::string_view enc_string, std::span<const uint8_t> private_key) const {
+        std::string_view padding;
+        if (enc_string.starts_with("3.")) {
+            padding = "OAEP(SHA-256)";
+        } else if (enc_string.starts_with("4.")) {
+            padding = "OAEP(SHA-1)";
+        } else {
+            throw CryptoError("unsupported RSA encryption type");
+        }
+
+        SecureBytes ciphertext = encoding::base64Decode(enc_string.substr(2));
+        try {
+            Botan::DataSource_Memory source(private_key.data(), private_key.size());
+            std::shared_ptr<Botan::Private_Key> key = Botan::PKCS8::load_key(source);
+            Botan::PK_Decryptor_EME decryptor(*key, Botan::system_rng(), padding);
+            return decryptor.decrypt(ciphertext.data(), ciphertext.size());
+        } catch (const Botan::Exception&) {
+            throw CryptoError("RSA decryption failed");
+        }
     }
 }

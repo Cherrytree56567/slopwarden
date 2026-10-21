@@ -246,6 +246,13 @@ namespace clientwarden {
                 m_features_->applyConfig(*config);
             }
         }
+        if (m_on_synced_) {
+            m_on_synced_();
+        }
         return true;
+    }
+
+    void Sync::onSynced(std::function<void()> callback) {
+        m_on_synced_ = std::move(callback);
     }
 }

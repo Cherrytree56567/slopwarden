@@ -33,7 +33,36 @@ namespace clientwarden {
     CipherQuery::CipherQuery(
             std::vector<Record> records, std::shared_ptr<Crypto> crypto, SymmetricKey user_key)
         : m_records_(std::move(records)), m_crypto_(std::move(crypto)),
-          m_user_key_(std::move(user_key)) {}
+          m_resolver_([user_key](const Json& cipher) -> std::optional<SymmetricKey> {
+              if (at(cipher, "organizationId").is_string()) {
+                  return std::nullopt;
+              }
+              return user_key;
+          }) {}
+
+    CipherQuery::CipherQuery(
+            std::vector<Record> records, std::shared_ptr<Crypto> crypto, KeyResolver resolver)
+        : m_records_(std::move(records)), m_crypto_(std::move(crypto)),
+          m_resolver_(std::move(resolver)) {}
+
+    CipherQuery& CipherQuery::inOrganization(std::string_view organization_id) {
+        SecureString id(organization_id);
+        return where_(
+                [id](const Json& cipher) { return stringAt(cipher, "organizationId") == id; });
+    }
+
+    CipherQuery& CipherQuery::inCollection(std::string_view collection_id) {
+        Json id = SecureString(collection_id);
+        return where_([id](const Json& cipher) {
+            const Json& collections = at(cipher, "collectionIds");
+            return collections.is_array() &&
+                   std::find(collections.begin(), collections.end(), id) != collections.end();
+        });
+    }
+
+    CipherQuery& CipherQuery::personal() {
+        return where_([](const Json& cipher) { return !at(cipher, "organizationId").is_string(); });
+    }
 
     CipherQuery& CipherQuery::where_(std::function<bool(const Json&)> predicate) {
         m_predicates_.push_back(std::move(predicate));
@@ -135,12 +164,15 @@ namespace clientwarden {
                     continue;
                 }
                 try {
+                    std::optional<SymmetricKey> wrapping = m_resolver_(cipher);
+                    if (!wrapping) {
+                        continue; // e.g. an organisation whose key isn't loaded
+                    }
                     const Json& key = at(cipher, "key");
                     SymmetricKey item_key =
-                            key.is_string()
-                                    ? m_crypto_->unwrapKey(
-                                              key.get_ref<const SecureString&>(), m_user_key_)
-                                    : m_user_key_;
+                            key.is_string() ? m_crypto_->unwrapKey(
+                                                      key.get_ref<const SecureString&>(), *wrapping)
+                                            : *wrapping;
                     SecureString plain = toLower(
                             m_crypto_->decryptText(name.get_ref<const SecureString&>(), item_key));
                     if (plain.find(m_needle_) == SecureString::npos) {

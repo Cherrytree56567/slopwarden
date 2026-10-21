@@ -473,7 +473,8 @@ namespace clientwarden {
     const Json& GenericItem::constSection_() const {
         std::optional<TypeSchema> schema = Schema::forType(getType());
         if (!schema) {
-            return at(Json(), "");
+            static const Json c_null;
+            return c_null;
         }
         return at(m_data_, schema->m_section);
     }
@@ -482,5 +483,100 @@ namespace clientwarden {
         if (getType() != type) {
             throw VaultError(SecureString(what) + " is not available for this item type");
         }
+    }
+
+    std::optional<SecureString> GenericItem::getOrganizationId() const {
+        const Json& organization = at(m_data_, "organizationId");
+        if (!organization.is_string()) {
+            return std::nullopt;
+        }
+        return organization.get<SecureString>();
+    }
+
+    std::vector<SecureString> GenericItem::getCollectionIds() const {
+        std::vector<SecureString> ids;
+        for (const Json& id : at(m_data_, "collectionIds")) {
+            if (id.is_string()) {
+                ids.push_back(id.get<SecureString>());
+            }
+        }
+        return ids;
+    }
+
+    bool GenericItem::canEdit() const {
+        const Json& edit = at(m_data_, "edit");
+        return !edit.is_boolean() || edit.get<bool>();
+    }
+
+    bool GenericItem::canViewPassword() const {
+        const Json& view = at(m_data_, "viewPassword");
+        return !view.is_boolean() || view.get<bool>();
+    }
+
+    bool GenericItem::shareTo(
+            std::string_view organization_id, std::vector<SecureString> collection_ids) {
+        if (!m_orchestrator_) {
+            throw VaultError("item is not attached to a vault");
+        }
+        return m_orchestrator_->shareItem(*this, organization_id, std::move(collection_ids));
+    }
+
+    bool GenericItem::setCollections(std::vector<SecureString> collection_ids) {
+        if (!m_orchestrator_) {
+            throw VaultError("item is not attached to a vault");
+        }
+        return m_orchestrator_->updateItemCollections(*this, std::move(collection_ids));
+    }
+
+    Json GenericItem::sharedJson(std::string_view organization_id, SymmetricKey organization_key,
+            std::vector<SecureString> collection_ids) const {
+        Json shared = m_data_;
+        shared.erase("createdOffline");
+        shared["organizationId"] = SecureString(organization_id);
+        shared["collectionIds"] = collection_ids;
+
+        if (at(m_data_, "key").is_string()) {
+            shared["key"] = m_crypto_->wrapKey(m_key_, organization_key);
+            return shared;
+        }
+
+        /*
+         * Legacy item encrypted with the user key: move everything under a new item key.
+         */
+        SymmetricKey new_key = SymmetricKey::generate();
+        shared["key"] = m_crypto_->wrapKey(new_key, organization_key);
+
+        std::optional<TypeSchema> schema = Schema::forType(getType());
+        if (schema) {
+            rekey_(shared[SecureString(schema->m_section)], *m_crypto_, m_key_, new_key);
+        }
+        for (std::string_view field : { std::string_view("name"), std::string_view("notes"),
+                     std::string_view("fields"), std::string_view("passwordHistory") }) {
+            rekey_(shared[SecureString(field)], *m_crypto_, m_key_, new_key);
+        }
+
+        Json& attachments = shared["attachments"];
+        if (attachments.is_array()) {
+            for (Json& attachment : attachments) {
+                SecureString wrapped = stringAt(attachment, "key");
+                if (wrapped.empty()) {
+                    throw VaultError("an attachment is too old to move; re-upload it first");
+                }
+                attachment["key"] =
+                        m_crypto_->wrapKey(m_crypto_->unwrapKey(wrapped, m_key_), new_key);
+                rekey_(attachment["fileName"], *m_crypto_, m_key_, new_key);
+            }
+
+            /*
+             * The share endpoint updates attachment metadata from "attachments2".
+             */
+            Json updated = Json::object();
+            for (const Json& attachment : attachments) {
+                updated[stringAt(attachment, "id")] = { { "fileName", at(attachment, "fileName") },
+                    { "key", at(attachment, "key") } };
+            }
+            shared["attachments2"] = updated;
+        }
+        return shared;
     }
 }

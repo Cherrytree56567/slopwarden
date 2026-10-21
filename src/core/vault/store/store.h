@@ -227,6 +227,27 @@ namespace clientwarden {
         void removeFolder(std::string_view id, bool queue_remote_delete);
 
         /**
+         * @brief All collections from the last sync.
+         *
+         * @return The collection records
+         */
+        std::vector<Record> getCollections() const;
+
+        /**
+         * @brief Inserts or replaces a collection (after creating or renaming it online).
+         *
+         * @param collection The collection JSON
+         */
+        void putCollection(Json collection);
+
+        /**
+         * @brief Removes a collection and drops it from every cipher's collectionIds.
+         *
+         * @param id The collection id
+         */
+        void removeCollection(std::string_view id);
+
+        /**
          * @brief Cipher ids deleted locally but not yet on the server.
          *
          * @return The ids

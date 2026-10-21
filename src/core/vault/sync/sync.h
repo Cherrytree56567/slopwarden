@@ -61,6 +61,13 @@ namespace clientwarden {
         void onAccountKeyChanged(std::function<void()> callback);
 
         /**
+         * @brief Called after every committed sync (e.g. to reload organisation keys).
+         *
+         * @param callback The listener
+         */
+        void onSynced(std::function<void()> callback);
+
+        /**
          * @brief Bumps the epoch so an in-flight sync won't commit (call on logout).
          */
         void invalidate();
@@ -77,6 +84,7 @@ namespace clientwarden {
         std::shared_ptr<Store> m_store_;
         std::shared_ptr<Features> m_features_;
         std::function<void()> m_on_key_changed_;
+        std::function<void()> m_on_synced_;
 
         std::mutex m_run_mutex_;
         std::mutex m_epoch_mutex_;

@@ -81,6 +81,12 @@ namespace clientwarden {
     const Json& at(const Json& object, std::string_view key);
 
     /**
+     * @brief Deleted: the result would refer into a temporary that dies at the end of the
+     * statement (or before a range-for body runs). Store the object in a local first.
+     */
+    const Json& at(Json&& object, std::string_view key) = delete;
+
+    /**
      * @brief Reads a string member.
      *
      * @param object The JSON object to read from

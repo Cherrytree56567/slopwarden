@@ -472,4 +472,75 @@ namespace clientwarden {
         }
         return std::move(response.m_body);
     }
+
+    std::optional<Json> Network::createOrganizationCipher(
+            const Json& cipher, const std::vector<SecureString>& collection_ids) {
+        Json body = { { "cipher", cipher }, { "collectionIds", collection_ids } };
+        return jsonOf_(call_(HttpMethod::Post, Host::Vault, "/api/ciphers/create", body),
+                "CreateOrganizationCipher");
+    }
+
+    std::optional<Json> Network::shareCipher(std::string_view id, const Json& cipher,
+            const std::vector<SecureString>& collection_ids) {
+        Json body = { { "cipher", cipher }, { "collectionIds", collection_ids } };
+        SecureString path = SecureString("/api/ciphers/") + segment_(id) + "/share";
+        return jsonOf_(call_(HttpMethod::Put, Host::Vault, std::move(path), body), "ShareCipher");
+    }
+
+    bool Network::updateCipherCollections(
+            std::string_view id, const std::vector<SecureString>& collection_ids) {
+        Json body = { { "collectionIds", collection_ids } };
+        SecureString base = SecureString("/api/ciphers/") + segment_(id);
+
+        /*
+         * collections_v2 is the current route; older servers (and Vaultwarden before 1.32)
+         * only have the original one.
+         */
+        HttpResponse response = call_(HttpMethod::Put, Host::Vault, base + "/collections_v2", body);
+        if (response.m_status == 404 || response.m_status == 405) {
+            response = call_(HttpMethod::Put, Host::Vault, base + "/collections", body);
+        }
+        return response.ok();
+    }
+
+    std::optional<Json> Network::createCollection(std::string_view organization_id,
+            std::string_view encrypted_name, std::string_view organization_user_id) {
+        Json users = Json::array();
+        if (!organization_user_id.empty()) {
+            users.push_back({ { "id", SecureString(organization_user_id) }, { "readOnly", false },
+                    { "hidePasswords", false }, { "manage", true } });
+        }
+        Json body = { { "name", SecureString(encrypted_name) }, { "externalId", nullptr },
+            { "groups", Json::array() }, { "users", users } };
+        SecureString path =
+                SecureString("/api/organizations/") + segment_(organization_id) + "/collections";
+        return jsonOf_(
+                call_(HttpMethod::Post, Host::Vault, std::move(path), body), "CreateCollection");
+    }
+
+    std::optional<Json> Network::renameCollection(std::string_view organization_id,
+            std::string_view id, std::string_view encrypted_name) {
+        SecureString path = SecureString("/api/organizations/") + segment_(organization_id) +
+                            "/collections/" + segment_(id);
+
+        /*
+         * PUT replaces the collection's access lists, so send back the current ones.
+         */
+        std::optional<Json> details =
+                jsonOf_(call_(HttpMethod::Get, Host::Vault, path + "/details", std::nullopt),
+                        "CollectionDetails");
+        Json body = { { "name", SecureString(encrypted_name) }, { "externalId", nullptr },
+            { "groups", details && at(*details, "groups").is_array() ? at(*details, "groups")
+                                                                     : Json::array() },
+            { "users", details && at(*details, "users").is_array() ? at(*details, "users")
+                                                                   : Json::array() } };
+        return jsonOf_(
+                call_(HttpMethod::Put, Host::Vault, std::move(path), body), "RenameCollection");
+    }
+
+    bool Network::deleteCollection(std::string_view organization_id, std::string_view id) {
+        SecureString path = SecureString("/api/organizations/") + segment_(organization_id) +
+                            "/collections/" + segment_(id);
+        return call_(HttpMethod::Delete, Host::Vault, std::move(path), std::nullopt).ok();
+    }
 }

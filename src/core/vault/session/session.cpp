@@ -295,6 +295,23 @@ namespace clientwarden {
         m_master_key_.clear();
         m_master_key_.shrink_to_fit();
         m_user_key_ = SymmetricKey();
+        m_organization_keys_.clear();
+    }
+
+    void Session::setOrganizationKeys(std::map<SecureString, SymmetricKey, std::less<>> keys) {
+        std::unique_lock<std::shared_mutex> lock(m_key_mutex_);
+        m_organization_keys_ = std::move(keys);
+    }
+
+    std::optional<SymmetricKey> Session::getOrganizationKey(
+            std::string_view organization_id) const {
+        std::shared_lock<std::shared_mutex> lock(m_key_mutex_);
+        std::map<SecureString, SymmetricKey, std::less<>>::const_iterator it =
+                m_organization_keys_.find(organization_id);
+        if (it == m_organization_keys_.end()) {
+            return std::nullopt;
+        }
+        return it->second;
     }
 
     bool Session::hasKeys() const {

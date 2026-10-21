@@ -256,6 +256,68 @@ namespace clientwarden {
         bool unarchiveCiphers(const std::vector<SecureString>& ids);
 
         /**
+         * @brief POST /api/ciphers/create: creates an item owned by an organisation.
+         *
+         * @param cipher The cipher, encrypted with its key wrapped by the organisation key
+         * @param collection_ids Collections to place it in (at least one)
+         * @return The server's copy, or nullopt
+         */
+        std::optional<Json> createOrganizationCipher(
+                const Json& cipher, const std::vector<SecureString>& collection_ids);
+
+        /**
+         * @brief PUT /api/ciphers/{id}/share: moves a personal item into an organisation.
+         *
+         * @param id The cipher id
+         * @param cipher The cipher re-keyed for the organisation
+         * @param collection_ids Collections to place it in (at least one)
+         * @return The server's copy, or nullopt
+         */
+        std::optional<Json> shareCipher(std::string_view id, const Json& cipher,
+                const std::vector<SecureString>& collection_ids);
+
+        /**
+         * @brief Replaces the collections an organisation item belongs to.
+         *
+         * @param id The cipher id
+         * @param collection_ids The new collections
+         * @return True on success
+         */
+        bool updateCipherCollections(
+                std::string_view id, const std::vector<SecureString>& collection_ids);
+
+        /**
+         * @brief POST /api/organizations/{orgId}/collections.
+         *
+         * @param organization_id The organisation
+         * @param encrypted_name The name encrypted with the organisation key
+         * @param organization_user_id The caller's membership id, granted manage access
+         * @return The server's collection, or nullopt
+         */
+        std::optional<Json> createCollection(std::string_view organization_id,
+                std::string_view encrypted_name, std::string_view organization_user_id);
+
+        /**
+         * @brief Renames a collection, keeping its existing group and user access.
+         *
+         * @param organization_id The organisation
+         * @param id The collection id
+         * @param encrypted_name The new name encrypted with the organisation key
+         * @return The server's collection, or nullopt
+         */
+        std::optional<Json> renameCollection(std::string_view organization_id, std::string_view id,
+                std::string_view encrypted_name);
+
+        /**
+         * @brief DELETE /api/organizations/{orgId}/collections/{id}.
+         *
+         * @param organization_id The organisation
+         * @param id The collection id
+         * @return True on success
+         */
+        bool deleteCollection(std::string_view organization_id, std::string_view id);
+
+        /**
          * @brief Uploads an attachment (prepare, then upload the body).
          *
          * @param cipher_id The owning cipher

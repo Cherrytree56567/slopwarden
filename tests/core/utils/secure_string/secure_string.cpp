@@ -39,7 +39,8 @@ TEST_CASE("at never inserts or reads past missing keys") {
     const Json& constant = object;
     REQUIRE(at(constant, "a") == 1);
     REQUIRE(at(constant, "missing").is_null());
-    REQUIRE(at(Json::array({ 1 }), "a").is_null());
+    Json array = Json::array({ 1 });
+    REQUIRE(at(array, "a").is_null());
     REQUIRE(object.size() == 1);
 }
 

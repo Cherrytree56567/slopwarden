@@ -224,3 +224,182 @@ TEST_CASE("Item types are known without decrypting") {
     REQUIRE(vault->getOrchestrator()->getItemType(card->getId()) == CipherType::Card);
     REQUIRE_FALSE(vault->getOrchestrator()->getItemType("missing"));
 }
+
+TEST_CASE("Creating an item in an organisation") {
+    Fixture fixture;
+    SecureString org = fixture.m_server->addOrganization("Acme", 2);
+    SecureString collection = fixture.m_server->addCollection(org, "Shared", false);
+    std::shared_ptr<BitwardenVault> vault = loggedInVault(fixture);
+    std::shared_ptr<Orchestrator> orchestrator = vault->getOrchestrator();
+
+    std::shared_ptr<LoginItem> login = orchestrator->createItem<LoginItem>(org, { collection });
+    login->setName("Team account").setPassword("shared-secret");
+    REQUIRE(login->commit());
+
+    /*
+     * The server stores it in the organisation, encrypted under the organisation key.
+    */
+    Json stored = fixture.m_server->m_ciphers[login->getId()];
+    REQUIRE(stored["organizationId"] == org);
+    REQUIRE(stored["collectionIds"][0] == collection);
+    SymmetricKey item_key = Crypto().unwrapKey(stringAt(stored, "key"), fixture.m_server->organizationKey(org));
+    REQUIRE(Crypto().decryptText(stringAt(stored["login"], "password"), item_key) == "shared-secret");
+
+    REQUIRE(orchestrator->getItem<LoginItem>(login->getId())->getPassword() == "shared-secret");
+    REQUIRE(orchestrator->query().inOrganization(org).nameContains("team").ids()
+            == std::vector<SecureString> { login->getId() });
+    REQUIRE(orchestrator->query().personal().ids().empty());
+    REQUIRE(orchestrator->query().inCollection(collection).ids().size() == 1);
+}
+
+TEST_CASE("Organisation items need a collection and the server") {
+    Fixture fixture;
+    SecureString org = fixture.m_server->addOrganization("Acme", 2);
+    SecureString collection = fixture.m_server->addCollection(org, "Shared", false);
+    std::shared_ptr<BitwardenVault> vault = loggedInVault(fixture);
+
+    REQUIRE_THROWS_AS(vault->getOrchestrator()->createItem<NoteItem>(org, {}), VaultError);
+    REQUIRE_THROWS_AS(vault->getOrchestrator()->createItem<NoteItem>("not-a-member", { collection }), VaultError);
+
+    fixture.m_server->m_online = false;
+    std::shared_ptr<NoteItem> note = vault->getOrchestrator()->createItem<NoteItem>(org, { collection });
+    REQUIRE_THROWS_AS(note->commit(), VaultError);
+    REQUIRE_FALSE(vault->getOrchestrator()->hasItem(note->getId()));
+}
+
+TEST_CASE("Moving a personal item into an organisation") {
+    Fixture fixture;
+    SecureString org = fixture.m_server->addOrganization("Acme", 2);
+    SecureString collection = fixture.m_server->addCollection(org, "Shared", false);
+    std::shared_ptr<BitwardenVault> vault = loggedInVault(fixture);
+    std::shared_ptr<Orchestrator> orchestrator = vault->getOrchestrator();
+
+    std::shared_ptr<NoteItem> note = orchestrator->createItem<NoteItem>();
+    note->setName("Wi-Fi").setNotes("password123").commit();
+    std::optional<SecureString> attachment = note->addAttachment("router.txt", encoding::bytesOf("admin"), nullptr);
+    REQUIRE(attachment);
+
+    REQUIRE_THROWS_AS(note->shareTo(org, {}), VaultError);
+    REQUIRE(note->shareTo(org, { collection }));
+    REQUIRE(note->getOrganizationId() == org);
+
+    std::shared_ptr<NoteItem> reloaded = orchestrator->getItem<NoteItem>(note->getId());
+    REQUIRE(reloaded->getNotes() == "password123");
+    REQUIRE(reloaded->getCollectionIds() == std::vector<SecureString> { collection });
+    REQUIRE(reloaded->downloadAttachment(*attachment, "/out/router.txt", nullptr));
+    REQUIRE(encoding::textOf(*fixture.m_files->read("/out/router.txt")) == "admin");
+
+    /*
+     * The item key is now wrapped by the organisation key, not the user key.
+    */
+    Json stored = fixture.m_server->m_ciphers[note->getId()];
+    REQUIRE_NOTHROW(Crypto().unwrapKey(stringAt(stored, "key"), fixture.m_server->organizationKey(org)));
+    REQUIRE_THROWS_AS(Crypto().unwrapKey(stringAt(stored, "key"), fixture.m_server->m_user_key), CryptoError);
+
+    REQUIRE_THROWS_AS(reloaded->shareTo(org, { collection }), VaultError);
+}
+
+TEST_CASE("Moving a legacy item re-encrypts everything under a new key") {
+    Fixture fixture;
+    SecureString org = fixture.m_server->addOrganization("Acme", 2);
+    SecureString collection = fixture.m_server->addCollection(org, "Shared", false);
+
+    /*
+     * A cipher from before per-item keys: fields encrypted directly with the user key.
+    */
+    Crypto crypto;
+    SymmetricKey user_key = fixture.m_server->m_user_key;
+    SymmetricKey attachment_key = SymmetricKey::generate();
+    fixture.m_server->m_ciphers["legacy-1"] = {
+        { "id", "legacy-1" }, { "type", 2 }, { "key", nullptr }, { "revisionDate", timestamp::now() },
+        { "name", crypto.encryptText("Old note", user_key) }, { "notes", crypto.encryptText("old secret", user_key) },
+        { "secureNote", { { "type", 0 } } },
+        { "passwordHistory", Json::array({ { { "password", crypto.encryptText("pw", user_key) } } }) },
+        { "attachments", Json::array({ { { "id", "att-legacy" }, { "fileName", crypto.encryptText("f.txt", user_key) },
+            { "key", crypto.wrapKey(attachment_key, user_key) } } }) }
+    };
+    std::shared_ptr<BitwardenVault> vault = loggedInVault(fixture);
+
+    std::shared_ptr<NoteItem> legacy = vault->getOrchestrator()->getItem<NoteItem>("legacy-1");
+    REQUIRE(legacy->shareTo(org, { collection }));
+
+    Json stored = fixture.m_server->m_ciphers["legacy-1"];
+    SymmetricKey item_key = crypto.unwrapKey(stringAt(stored, "key"), fixture.m_server->organizationKey(org));
+    REQUIRE(crypto.decryptText(stringAt(stored, "notes"), item_key) == "old secret");
+    REQUIRE(crypto.decryptText(stringAt(stored["passwordHistory"][0], "password"), item_key) == "pw");
+    REQUIRE(crypto.decryptText(stringAt(stored["attachments"][0], "fileName"), item_key) == "f.txt");
+    REQUIRE(crypto.unwrapKey(stringAt(stored["attachments"][0], "key"), item_key).combined() == attachment_key.combined());
+    REQUIRE_THROWS_AS(crypto.decrypt(stringAt(stored, "notes"), user_key), CryptoError);
+    REQUIRE_FALSE(stored.contains("attachments2"));
+}
+
+TEST_CASE("Changing an organisation item's collections") {
+    Fixture fixture;
+    SecureString org = fixture.m_server->addOrganization("Acme", 2);
+    SecureString first = fixture.m_server->addCollection(org, "First", false);
+    SecureString second = fixture.m_server->addCollection(org, "Second", false);
+    std::shared_ptr<BitwardenVault> vault = loggedInVault(fixture);
+
+    std::shared_ptr<NoteItem> note = vault->getOrchestrator()->createItem<NoteItem>(org, { first });
+    note->commit();
+    REQUIRE(note->setCollections({ first, second }));
+    REQUIRE(fixture.m_server->m_ciphers[note->getId()]["collectionIds"].size() == 2);
+
+    /*
+     * Older servers only have the original route.
+    */
+    fixture.m_server->m_collections_v2 = false;
+    REQUIRE(note->setCollections({ second }));
+    REQUIRE(fixture.m_server->m_ciphers[note->getId()]["collectionIds"][0] == second);
+
+    std::shared_ptr<NoteItem> personal = vault->getOrchestrator()->createItem<NoteItem>();
+    personal->commit();
+    REQUIRE_THROWS_AS(personal->setCollections({ first }), VaultError);
+    REQUIRE_THROWS_AS(note->setCollections({}), VaultError);
+}
+
+TEST_CASE("Read-only organisation items refuse edits") {
+    Fixture fixture;
+    SecureString org = fixture.m_server->addOrganization("Acme", 2);
+    SecureString locked = fixture.m_server->addCollection(org, "Locked", true);
+    Crypto crypto;
+    SymmetricKey item_key = SymmetricKey::generate();
+    fixture.m_server->m_ciphers["ro-1"] = { { "id", "ro-1" }, { "type", 2 }, { "organizationId", org },
+        { "collectionIds", Json::array({ locked }) }, { "revisionDate", timestamp::now() },
+        { "key", crypto.wrapKey(item_key, fixture.m_server->organizationKey(org)) },
+        { "name", crypto.encryptText("Policy", item_key) }, { "secureNote", { { "type", 0 } } } };
+    std::shared_ptr<BitwardenVault> vault = loggedInVault(fixture);
+
+    std::shared_ptr<NoteItem> note = vault->getOrchestrator()->getItem<NoteItem>("ro-1");
+    REQUIRE(note->getName() == "Policy");
+    REQUIRE_FALSE(note->canEdit());
+    REQUIRE_THROWS_AS(note->setName("Changed").commit(), VaultError);
+    REQUIRE_THROWS_AS(note->remove(), VaultError);
+    REQUIRE_THROWS_AS(note->bin(), VaultError);
+}
+
+TEST_CASE("Duplicating an organisation item keeps it in the organisation") {
+    Fixture fixture;
+    SecureString org = fixture.m_server->addOrganization("Acme", 2);
+    SecureString collection = fixture.m_server->addCollection(org, "Shared", false);
+    std::shared_ptr<BitwardenVault> vault = loggedInVault(fixture);
+
+    std::shared_ptr<CardItem> card = vault->getOrchestrator()->createItem<CardItem>(org, { collection });
+    card->setNumber("4111").commit();
+    SecureString copy = card->duplicate();
+
+    REQUIRE(fixture.m_server->m_ciphers[copy]["organizationId"] == org);
+    REQUIRE(vault->getOrchestrator()->getItem<CardItem>(copy)->getNumber() == "4111");
+}
+
+TEST_CASE("Autofill includes organisation logins") {
+    Fixture fixture;
+    SecureString org = fixture.m_server->addOrganization("Acme", 2);
+    SecureString collection = fixture.m_server->addCollection(org, "Shared", false);
+    std::shared_ptr<BitwardenVault> vault = loggedInVault(fixture);
+
+    std::shared_ptr<LoginItem> login = vault->getOrchestrator()->createItem<LoginItem>(org, { collection });
+    login->addWebsite("https://intranet.acme.test").commit();
+    REQUIRE(vault->getAutoFill()->matchingLogins("https://intranet.acme.test/login", false)
+            == std::vector<SecureString> { login->getId() });
+}

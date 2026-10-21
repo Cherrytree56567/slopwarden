@@ -1,5 +1,7 @@
 #include "store.h"
 
+#include <algorithm>
+
 #include <functional>
 #include <mutex>
 
@@ -243,6 +245,65 @@ namespace clientwarden {
     std::vector<Record> Store::getFolders() const {
         std::shared_lock<std::shared_mutex> lock(m_mutex_);
         return m_folders_.all();
+    }
+
+    std::vector<Record> Store::getCollections() const {
+        std::shared_lock<std::shared_mutex> lock(m_mutex_);
+        std::vector<Record> collections;
+        for (const Json& collection : at(m_top_level_, "collections")) {
+            if (collection.is_object()) {
+                collections.push_back(std::make_shared<const Json>(collection));
+            }
+        }
+        return collections;
+    }
+
+    void Store::putCollection(Json collection) {
+        std::unique_lock<std::shared_mutex> lock(m_mutex_);
+        Json& list = m_top_level_["collections"];
+        if (!list.is_array()) {
+            list = Json::array();
+        }
+        SecureString id = stringAt(collection, "id");
+        for (Json& existing : list) {
+            if (stringAt(existing, "id") == id) {
+                existing = std::move(collection);
+                persist_();
+                return;
+            }
+        }
+        list.push_back(std::move(collection));
+        persist_();
+    }
+
+    void Store::removeCollection(std::string_view id) {
+        std::unique_lock<std::shared_mutex> lock(m_mutex_);
+        Json& list = m_top_level_["collections"];
+        if (list.is_array()) {
+            list.erase(std::remove_if(list.begin(), list.end(),
+                               [id](const Json& collection) {
+                                   return stringAt(collection, "id") == id;
+                               }),
+                    list.end());
+        }
+
+        /*
+         * The server drops a deleted collection from every item; mirror that locally.
+         */
+        for (Record& cipher : m_ciphers_.all()) {
+            const Json& ids = at(*cipher, "collectionIds");
+            if (!ids.is_array() ||
+                    std::find(ids.begin(), ids.end(), Json(SecureString(id))) == ids.end()) {
+                continue;
+            }
+            Json copy = *cipher;
+            copy["collectionIds"].erase(
+                    std::remove(copy["collectionIds"].begin(), copy["collectionIds"].end(),
+                            Json(SecureString(id))),
+                    copy["collectionIds"].end());
+            m_ciphers_.put(std::make_shared<const Json>(std::move(copy)));
+        }
+        persist_();
     }
 
     void Store::putFolder(Json folder) {

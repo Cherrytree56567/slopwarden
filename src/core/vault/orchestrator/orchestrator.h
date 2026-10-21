@@ -116,6 +116,31 @@ namespace clientwarden {
         std::optional<CipherType> getItemType(std::string_view id);
 
         /**
+         * @brief Starts a new, unsaved item owned by an organisation. Organisation items can
+         * only be created online, because the server must place them in collections.
+         *
+         * @tparam T LoginItem, CardItem, ...
+         * @param organization_id The owning organisation
+         * @param collection_ids Collections to place it in (at least one)
+         * @return The item
+         * @throws VaultError if the organisation key isn't available or no collection is given
+         */
+        template <typename T>
+        std::shared_ptr<T> createItem(
+                std::string_view organization_id, std::vector<SecureString> collection_ids) {
+            if (collection_ids.empty()) {
+                throw VaultError("organisation items need at least one collection");
+            }
+            SymmetricKey key;
+            Json cipher = GenericItem::createJson(
+                    T::c_type, m_crypto_, organizationKey_(organization_id), key);
+            cipher["organizationId"] = SecureString(organization_id);
+            cipher["collectionIds"] = collection_ids;
+            return std::make_shared<T>(
+                    shared_from_this(), m_crypto_, std::move(cipher), std::move(key));
+        }
+
+        /**
          * @brief Whether an item exists.
          *
          * @param id The cipher id
@@ -185,6 +210,26 @@ namespace clientwarden {
          * @return The copy's id
          */
         SecureString duplicateItem(GenericItem& item);
+
+        /**
+         * @brief Moves a personal item into an organisation.
+         *
+         * @param item The item (must be personal and saved online)
+         * @param organization_id The organisation
+         * @param collection_ids Collections to place it in (at least one)
+         * @return True once the server has it
+         */
+        bool shareItem(GenericItem& item, std::string_view organization_id,
+                std::vector<SecureString> collection_ids);
+
+        /**
+         * @brief Replaces an organisation item's collections.
+         *
+         * @param item The item (must belong to an organisation)
+         * @param collection_ids The new collections (at least one)
+         * @return True once the server has it
+         */
+        bool updateItemCollections(GenericItem& item, std::vector<SecureString> collection_ids);
 
         /**
          * @brief Encrypts and uploads an attachment.
@@ -276,6 +321,9 @@ namespace clientwarden {
 
     private:
         Json getCipherJson_(std::string_view id);
+        SymmetricKey organizationKey_(std::string_view organization_id);
+        std::optional<SymmetricKey> wrappingKeyFor_(const Json& cipher);
+        void requireEditable_(GenericItem& item);
         SymmetricKey itemKeyFor_(const Json& cipher);
         bool commitStatus_(GenericItem& item, bool ok);
 

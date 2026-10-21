@@ -152,6 +152,35 @@ namespace clientwarden {
         std::time_t getArchivedDate() const;
 
         /**
+         * @brief The organisation that owns the item.
+         *
+         * @return The organisation id, or nullopt for a personal item
+         */
+        std::optional<SecureString> getOrganizationId() const;
+
+        /**
+         * @brief The organisation collections the item is in.
+         *
+         * @return Collection ids (empty for personal items)
+         */
+        std::vector<SecureString> getCollectionIds() const;
+
+        /**
+         * @brief Whether the user may edit the item (false for read-only collections).
+         *
+         * @return True if editable
+         */
+        bool canEdit() const;
+
+        /**
+         * @brief Whether the UI may reveal the password (false for "hide passwords" collections).
+         * Autofill still uses it, as in Bitwarden.
+         *
+         * @return True if the password may be shown
+         */
+        bool canViewPassword() const;
+
+        /**
          * @brief The decrypted custom fields.
          *
          * @return The fields in order
@@ -289,6 +318,25 @@ namespace clientwarden {
         SecureString duplicate();
 
         /**
+         * @brief Moves a personal item into an organisation. Requires the server.
+         *
+         * @param organization_id The organisation
+         * @param collection_ids Collections to place it in (at least one)
+         * @return True on success
+         * @throws VaultError if the item already belongs to an organisation or no collection is
+         * given
+         */
+        bool shareTo(std::string_view organization_id, std::vector<SecureString> collection_ids);
+
+        /**
+         * @brief Replaces the collections an organisation item is in. Requires the server.
+         *
+         * @param collection_ids The new collections (at least one)
+         * @return True on success
+         */
+        bool setCollections(std::vector<SecureString> collection_ids);
+
+        /**
          * @brief Encrypts and uploads a file. The item must already be saved online.
          *
          * @param file_name The file name
@@ -357,6 +405,22 @@ namespace clientwarden {
          * @param archived True to mark as archived
          */
         void markArchived(bool archived);
+
+        /**
+         * @brief The cipher prepared for moving into an organisation (for the orchestrator).
+         *
+         * An item with its own key keeps its ciphertext; only the key is re-wrapped. An older item
+         * encrypted directly with the user key gets a fresh item key and every field, history
+         * entry and attachment key is re-encrypted under it.
+         *
+         * @param organization_id The organisation
+         * @param organization_key The organisation's key
+         * @param collection_ids The collections
+         * @return The cipher JSON to send
+         * @throws VaultError if an attachment predates per-attachment keys
+         */
+        Json sharedJson(std::string_view organization_id, SymmetricKey organization_key,
+                std::vector<SecureString> collection_ids) const;
 
         /**
          * @brief A re-encrypted copy for duplication: new id and key, history, attachments and
