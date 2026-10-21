@@ -16,19 +16,19 @@
 <!-- PROJECT LOGO -->
 <br />
 <div align="center">
-  <!--<a href="https://github.com/Cherrytree56567/ClientWarden">
+  <!--<a href="https://github.com/Cherrytree56567/SlopWarden">
     <img src="images/logo.png" alt="Logo" width="80" height="80">
   </a>-->
 
-  <h3 align="center">ClientWarden</h3>
+  <h3 align="center">SlopWarden</h3>
 
   <p align="center">
-    ClientWarden is designed to be a <b>secure</b>, <b>visually appealing</b>, <b>well designed</b>, <b>lightweight</b> and <b>platform specific</b> alternative to the default Bitwarden Client which is based on Electron. Currently ClientWarden is only supported on MacOS with Linux and Android Support coming next.
+    SlopWarden is designed to be a <b>secure</b>, <b>visually appealing</b>, <b>well designed</b>, <b>lightweight</b> and <b>platform specific</b> alternative to the default Bitwarden Client which is based on Electron. Currently SlopWarden is only supported on MacOS with Linux and Android Support coming next. SLOPWARDEN IS AN AI SLOP AND IS NOT PRODUCTION CODE. DO NOT RUN!!!
     <br />
     <br />
-    <a href="https://github.com/Cherrytree56567/ClientWarden/issues/new?labels=bug&template=bug-report---.md">Report Bug</a>
+    <a href="https://github.com/Cherrytree56567/SlopWarden/issues/new?labels=bug&template=bug-report---.md">Report Bug</a>
     &middot;
-    <a href="https://github.com/Cherrytree56567/ClientWarden/issues/new?labels=enhancement&template=feature-request---.md">Request Feature</a>
+    <a href="https://github.com/Cherrytree56567/SlopWarden/issues/new?labels=enhancement&template=feature-request---.md">Request Feature</a>
   </p>
 </div>
 
@@ -60,14 +60,14 @@
 <!-- ABOUT THE PROJECT -->
 ## About The Project
 
-[![Product Name Screen Shot][product-screenshot]](https://github.com/Cherrytree56567/ClientWarden)
+[![Product Name Screen Shot][product-screenshot]](https://github.com/Cherrytree56567/SlopWarden)
 
-The official BitWarden Client is inefficient, resource intensive and uses electron and there aren't any currently maintained open-source BitWarden clients for desktop. Clientwarden is a native, platform-specific BitWarden client that aims to match the core BitWarden features while being well designed, visually appealing, lightweight and secure. Some functionality (like Passkey Login, Device Login, etc) is still being implemented.
+The official BitWarden Client is inefficient, resource intensive and uses electron and there aren't any currently maintained open-source BitWarden clients for desktop. SlopWarden is a native, platform-specific BitWarden client that aims to match the core BitWarden features while being well designed, visually appealing, lightweight and secure. Some functionality (like Passkey Login, Device Login, etc) is still being implemented.
 
-Anyways, here are some reasons to use Clientwarden:
-* Clientwarden uses SwiftUI to blend in with MacOS and look as good as possible
-* Clientwarden uses Botan secure_vector's for storing passwords safely
-* Clientwarden avoids using too much memory
+Anyways, here are some reasons to use SlopWarden:
+* SlopWarden uses SwiftUI to blend in with MacOS and look as good as possible
+* SlopWarden uses Botan secure_vector's for storing passwords safely
+* SlopWarden avoids using too much memory
 
 ### Built With
 
@@ -81,11 +81,11 @@ Anyways, here are some reasons to use Clientwarden:
 <!-- GETTING STARTED -->
 ## Getting Started
 
-Here are some instructions on how to build Clientwarden, currently only on MacOS.
+Here are some instructions on how to build SlopWarden, currently only on MacOS.
 
 ### Prerequisites
 
-Before building Clientwarden, install VS 2026 with C++ and WinUI Extensions, CMake, Conan, vcpkg and git.
+Before building SlopWarden, install VS 2026 with C++ and WinUI Extensions, CMake, Conan, vcpkg and git.
 ```sh
 mkdir build
 conan install . --output-folder=build --build=missing
@@ -98,7 +98,7 @@ You might need to use the `-s compiler.cppstd=20` flag.
 1. Install CMake
 2. Clone the repo
    ```sh
-   git clone https://github.com/Cherrytree56567/ClientWarden.git
+   git clone https://github.com/Cherrytree56567/SlopWarden.git
    ```
 3. Prerequisites
 4. Build
@@ -115,7 +115,7 @@ You might need to use the `-s compiler.cppstd=20` flag.
 1. Install CMake
 2. Clone the repo
    ```sh
-   git clone https://github.com/Cherrytree56567/ClientWarden.git
+   git clone https://github.com/Cherrytree56567/SlopWarden.git
    ```
 3. Prerequisites
 4. Build (add `-DLINUX=1` to the `cmake ..` command to build the Linux version on MacOS)
@@ -151,7 +151,7 @@ You might need to use the `-s compiler.cppstd=20` flag.
 ## Roadmap
 
 - [ ] V1.0.0
-  - [X] Clientwarden stays open in the background
+  - [X] SlopWarden stays open in the background
   - [X] Auto Lock Support
   - [X] AutoFill Support
     - [X] Check if CW App is open
@@ -203,7 +203,7 @@ You might need to use the `-s compiler.cppstd=20` flag.
   - [ ] Add VaultWarden to VaultFeatures
   - [ ] Use VaultFeatures in UI
 
-See the [open issues](https://github.com/Cherrytree56567/Clientwarden/issues) for a full list of proposed features (and known issues).
+See the [open issues](https://github.com/Cherrytree56567/SlopWarden/issues) for a full list of proposed features (and known issues).
 
 <!-- CONTRIBUTING -->
 ## Contributing
@@ -221,8 +221,8 @@ Don't forget to give the project a star! Thanks again!
 
 ### Top contributors:
 
-<a href="https://github.com/Cherrytree56567/ClientWarden/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=Cherrytree56567/ClientWarden" alt="contrib.rocks image" />
+<a href="https://github.com/Cherrytree56567/SlopWarden/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=Cherrytree56567/SlopWarden" alt="contrib.rocks image" />
 </a>
 
 <!-- LICENSE -->
@@ -244,17 +244,17 @@ Thanks to:
 * [Readme Template](https://github.com/othneildrew/Best-README-Template)
 * @Dexrn - For helping me with base and derived classes in the Backend
 
-[contributors-shield]: https://img.shields.io/github/contributors/Cherrytree56567/ClientWarden.svg?style=for-the-badge
-[contributors-url]: https://github.com/Cherrytree56567/ClientWarden/graphs/contributors
-[forks-shield]: https://img.shields.io/github/forks/Cherrytree56567/ClientWarden.svg?style=for-the-badge
-[forks-url]: https://github.com/Cherrytree56567/ClientWarden/network/members
-[stars-shield]: https://img.shields.io/github/stars/Cherrytree56567/ClientWarden.svg?style=for-the-badge
-[stars-url]: https://github.com/Cherrytree56567/ClientWarden/stargazers
-[issues-shield]: https://img.shields.io/github/issues/Cherrytree56567/ClientWarden.svg?style=for-the-badge
-[issues-url]: https://github.com/Cherrytree56567/ClientWarden/issues
-[license-shield]: https://img.shields.io/github/license/Cherrytree56567/ClientWarden.svg?style=for-the-badge
-[license-url]: https://github.com/Cherrytree56567/ClientWarden/blob/master/LICENSE
+[contributors-shield]: https://img.shields.io/github/contributors/Cherrytree56567/SlopWarden.svg?style=for-the-badge
+[contributors-url]: https://github.com/Cherrytree56567/SlopWarden/graphs/contributors
+[forks-shield]: https://img.shields.io/github/forks/Cherrytree56567/SlopWarden.svg?style=for-the-badge
+[forks-url]: https://github.com/Cherrytree56567/SlopWarden/network/members
+[stars-shield]: https://img.shields.io/github/stars/Cherrytree56567/SlopWarden.svg?style=for-the-badge
+[stars-url]: https://github.com/Cherrytree56567/SlopWarden/stargazers
+[issues-shield]: https://img.shields.io/github/issues/Cherrytree56567/SlopWarden.svg?style=for-the-badge
+[issues-url]: https://github.com/Cherrytree56567/SlopWarden/issues
+[license-shield]: https://img.shields.io/github/license/Cherrytree56567/SlopWarden.svg?style=for-the-badge
+[license-url]: https://github.com/Cherrytree56567/SlopWarden/blob/master/LICENSE
 [discord-shield]: https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white&style=for-the-badge
 [discord-url]: https://discord.gg/SrprsdYnu7
-[product-screenshot]: https://github.com/Cherrytree56567/ClientWarden/raw/refs/heads/main/assets/demo.gif
+[product-screenshot]: https://github.com/Cherrytree56567/SlopWarden/raw/refs/heads/main/assets/demo.gif
 
