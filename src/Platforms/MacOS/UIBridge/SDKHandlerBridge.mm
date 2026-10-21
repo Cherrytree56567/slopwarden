@@ -1,12 +1,11 @@
 #import "SDKHandlerBridge.h"
 #import <Cocoa/Cocoa.h>
 #import "clientwarden-Swift.h"
-#include <boost/algorithm/string/join.hpp>
-#include <boost/url.hpp>
 #include <vector>
 #include <string>
-#include "Vault.h"
-#include "Util/Util.h"
+#include "vault_manager/vault_manager.h"
+#include "utils/logger/logger.h"
+#include "items/login_item/login_item.h"
 
 /*
  * Callbacks for the AutoFill extension. Failures return empty strings
@@ -30,72 +29,42 @@
     [self cb_getPasskeyInfo];
 }
 
-/*
- * Lowercased host of a URL, accepting bare domains ("github.com") as
- * well as full URLs.
- */
-static std::optional<std::string> HostOf(std::string_view url) {
-    auto parsed = boost::urls::parse_uri(url);
-    if (!parsed || parsed->host().empty()) {
-        parsed = boost::urls::parse_uri("https://" + std::string(url));
-    }
-    if (!parsed || parsed->host().empty()) {
-        return std::nullopt;
-    }
-    return ClientWarden::ToLower(parsed->host());
+static clientwarden::SecureString LowerUUID(NSString* uuid) {
+    return clientwarden::toLower(uuid.UTF8String);
 }
 
-static std::string LowerUUID(NSString* uuid) {
-    return ClientWarden::ToLower(uuid.UTF8String);
-}
-
-static NSString* NS(const ClientWarden::SecretString& s) {
+static NSString* NS(const clientwarden::SecureString& s) {
     return [[NSString alloc] initWithBytes:s.data() length:s.size() encoding:NSUTF8StringEncoding];
 }
 
 /*
- * Comma-separated ids of usable logins with a URI on the same host as
- * `website`.
+ * Comma-separated ids of usable logins for `website`, using Bitwarden's URI match rules and
+ * equivalent domains (vault AutoFill).
  */
 static NSString* MatchingLogins(NSString* website, bool passkeysOnly) {
-    std::optional<std::string> host = HostOf(website.UTF8String);
-    if (!host) {
-        return @"";
-    }
+    std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
+    std::vector<clientwarden::SecureString> matched = v_inst->getAutoFill()->matchingLogins(website.UTF8String, passkeysOnly);
 
-    ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
-    ClientWarden::ItemQuery query = v_inst.Query();
-    query.NotInBin().NotArchived().OfType(ClientWarden::CipherType::Login);
-    if (passkeysOnly) {
-        query.WithPasskey();
-    }
-
-    std::vector<std::string> matched;
-    for (const auto& id : query.Ids()) {
-        std::optional<ClientWarden::Item> item = v_inst.GetItem(id);
-        if (!item) {
-            continue;
+    clientwarden::SecureString joined;
+    for (const clientwarden::SecureString& id : matched) {
+        if (!joined.empty()) {
+            joined += ",";
         }
-        for (const auto& uri : item->Uris()) {
-            if (HostOf(std::string_view(uri.data(), uri.size())) == host) {
-                matched.push_back(id);
-                break;
-            }
-        }
+        joined += id;
     }
-
-    return [NSString stringWithUTF8String: boost::algorithm::join(matched, ",").c_str()];
+    return NS(joined);
 }
 
 /*
- * Decrypts one field of a login, or "" if it isn't one.
+ * Loads a login for the extension, or nullptr if it isn't one.
  */
-static NSString* LoginField(NSString* uuid, ClientWarden::FieldId field) {
-    std::optional<ClientWarden::Item> item = ClientWarden::Vault::Instance().GetItem(LowerUUID(uuid));
-    if (!item || item->Type() != ClientWarden::CipherType::Login) {
-        return @"";
+static std::shared_ptr<clientwarden::LoginItem> LoadLogin(NSString* uuid) {
+    std::shared_ptr<clientwarden::Orchestrator> orchestrator = clientwarden::VaultManager::instance().getActiveVault()->getOrchestrator();
+    clientwarden::SecureString id = LowerUUID(uuid);
+    if (orchestrator->getItemType(id) != clientwarden::CipherType::Login) {
+        return nullptr;
     }
-    return NS(item->Get(field));
+    return orchestrator->getItem<clientwarden::LoginItem>(id);
 }
 
 + (void)cb_getLogins {
@@ -103,7 +72,7 @@ static NSString* LoginField(NSString* uuid, ClientWarden::FieldId field) {
         try {
             return MatchingLogins(website, false);
         } catch (const std::exception& e) {
-            ClientWarden::Log()->warn("AutoFill login lookup failed: {}", e.what());
+            clientwarden::Logger::get()->warn("AutoFill login lookup failed: {}", e.what());
             return @"";
         }
     };
@@ -112,10 +81,11 @@ static NSString* LoginField(NSString* uuid, ClientWarden::FieldId field) {
 + (void)cb_getTitle {
     SDKHandler.instance.cb_getTitle = ^NSString* (NSString* uuid) {
         try {
-            std::optional<ClientWarden::Item> item = ClientWarden::Vault::Instance().GetItem(LowerUUID(uuid));
-            return item ? NS(item->Name()) : @"";
+            std::shared_ptr<clientwarden::Orchestrator> orchestrator = clientwarden::VaultManager::instance().getActiveVault()->getOrchestrator();
+            clientwarden::SecureString id = LowerUUID(uuid);
+            return orchestrator->hasItem(id) ? NS(orchestrator->getGenericItem(id)->getName()) : @"";
         } catch (const std::exception& e) {
-            ClientWarden::Log()->warn("AutoFill title lookup failed: {}", e.what());
+            clientwarden::Logger::get()->warn("AutoFill title lookup failed: {}", e.what());
             return @"";
         }
     };
@@ -124,9 +94,10 @@ static NSString* LoginField(NSString* uuid, ClientWarden::FieldId field) {
 + (void)cb_getUsername {
     SDKHandler.instance.cb_getUsername = ^NSString* (NSString* uuid) {
         try {
-            return LoginField(uuid, ClientWarden::Fields::Login::Username);
+            std::shared_ptr<clientwarden::LoginItem> login = LoadLogin(uuid);
+            return login ? NS(login->getUsername()) : @"";
         } catch (const std::exception& e) {
-            ClientWarden::Log()->warn("AutoFill username lookup failed: {}", e.what());
+            clientwarden::Logger::get()->warn("AutoFill username lookup failed: {}", e.what());
             return @"";
         }
     };
@@ -135,9 +106,10 @@ static NSString* LoginField(NSString* uuid, ClientWarden::FieldId field) {
 + (void)cb_getPassword {
     SDKHandler.instance.cb_getPassword = ^NSString* (NSString* uuid) {
         try {
-            return LoginField(uuid, ClientWarden::Fields::Login::Password);
+            std::shared_ptr<clientwarden::LoginItem> login = LoadLogin(uuid);
+            return login ? NS(login->getPassword()) : @"";
         } catch (const std::exception& e) {
-            ClientWarden::Log()->warn("AutoFill password lookup failed: {}", e.what());
+            clientwarden::Logger::get()->warn("AutoFill password lookup failed: {}", e.what());
             return @"";
         }
     };
@@ -150,7 +122,7 @@ static NSString* LoginField(NSString* uuid, ClientWarden::FieldId field) {
  */
 + (void)cb_createPasskey {
     SDKHandler.instance.cb_createPasskey = ^NSString* (NSString* info) {
-        ClientWarden::Log()->info("AutoFill passkey creation is not supported yet");
+        clientwarden::Logger::get()->info("AutoFill passkey creation is not supported yet");
         return @"";
     };
 }
@@ -160,7 +132,7 @@ static NSString* LoginField(NSString* uuid, ClientWarden::FieldId field) {
         try {
             return MatchingLogins(website, true);
         } catch (const std::exception& e) {
-            ClientWarden::Log()->warn("AutoFill passkey lookup failed: {}", e.what());
+            clientwarden::Logger::get()->warn("AutoFill passkey lookup failed: {}", e.what());
             return @"";
         }
     };
@@ -168,7 +140,7 @@ static NSString* LoginField(NSString* uuid, ClientWarden::FieldId field) {
 
 + (void)cb_getPasskeyInfo {
     SDKHandler.instance.cb_getPasskeyInfo = ^NSString* (NSString* uuid) {
-        ClientWarden::Log()->info("AutoFill passkey assertion is not supported yet");
+        clientwarden::Logger::get()->info("AutoFill passkey assertion is not supported yet");
         return @"";
     };
 }

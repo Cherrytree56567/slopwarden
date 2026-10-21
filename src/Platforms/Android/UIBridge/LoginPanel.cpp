@@ -2,7 +2,7 @@
 #include <mutex>
 #include <type_traits>
 #include <string>
-#include "Vault.h"
+#include "vault_manager/vault_manager.h"
 
 namespace {
     /*
@@ -56,9 +56,9 @@ namespace {
         callObjectSetter(env, g_mainActivityObject, "Lcom/ct5/clientwarden/MainActivityObject;", "setUIType", static_cast<jint>(view));
     }
 
-    std::string toString(JNIEnv* env, jstring str) {
+    clientwarden::SecureString toString(JNIEnv* env, jstring str) {
         const char* chars = env->GetStringUTFChars(str, nullptr);
-        std::string out(chars);
+        clientwarden::SecureString out(chars);
         env->ReleaseStringUTFChars(str, chars);
         return out;
     }
@@ -70,8 +70,9 @@ namespace {
     void watchVaultState() {
         static std::once_flag once;
         std::call_once(once, [] {
-            ClientWarden::Vault::Instance().OnStateChange([](ClientWarden::AuthState state) {
-                if (g_vm == nullptr || (state != ClientWarden::AuthState::LoggedOut && state != ClientWarden::AuthState::Unlockable)) {
+            clientwarden::VaultManager::instance().getActiveVault()->onStateChange([](clientwarden::VaultState state) {
+                bool toLogin = state == clientwarden::VaultState::LoggedOut || state == clientwarden::VaultState::Failed;
+                if (g_vm == nullptr || (!toLogin && state != clientwarden::VaultState::Unlockable)) {
                     return;
                 }
 
@@ -84,7 +85,7 @@ namespace {
                     attached = true;
                 }
 
-                setMainView(env, state == ClientWarden::AuthState::LoggedOut ? MainView::Login : MainView::Unlock);
+                setMainView(env, toLogin ? MainView::Login : MainView::Unlock);
 
                 if (attached) {
                     g_vm->DetachCurrentThread();
@@ -122,37 +123,35 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_com_ct5_clientwarden_UIBridge_cbLogin(JNIEnv* env, jobject _this, jstring j_username, jstring j_password,
     jstring j_vaultURL, jstring j_mainURL, jstring j_apiURL, jstring j_iconURL, jstring j_wssURL) {
     try {
-        ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+        std::shared_ptr<clientwarden::Vault> vault = clientwarden::VaultManager::instance().getActiveVault();
         watchVaultState();
 
         /*
          * The main URL isn't needed by the vault; Bitwarden serves the
          * identity endpoints from the vault URL.
         */
-        v_inst.SetServer(ClientWarden::ServerUrls {
+        vault->setServer(clientwarden::ServerUrls {
             toString(env, j_vaultURL),
             toString(env, j_apiURL),
             toString(env, j_iconURL),
             toString(env, j_wssURL)
         });
 
-        std::string password = toString(env, j_password);
-        ClientWarden::LoginResult result = v_inst.Login(toString(env, j_username), password);
-        Botan::secure_scrub_memory(password.data(), password.size());
+        clientwarden::LoginResult result = vault->login(toString(env, j_username), toString(env, j_password));
 
         switch (result) {
-            case ClientWarden::LoginResult::Success:
+            case clientwarden::LoginResult::Success:
                 setMainView(env, MainView::Vault);
                 return JNI_TRUE;
-            case ClientWarden::LoginResult::NeedsTotp:
+            case clientwarden::LoginResult::NeedsTotp:
                 setScreenType(env, LoginScreenType::TOTP);
                 setMainView(env, MainView::Login);
                 return JNI_TRUE;
-            case ClientWarden::LoginResult::NeedsDeviceVerification:
+            case clientwarden::LoginResult::NeedsDeviceVerification:
                 setScreenType(env, LoginScreenType::DeviceVerify);
                 setMainView(env, MainView::Login);
                 return JNI_TRUE;
-            case ClientWarden::LoginResult::NeedsPasskey:
+            case clientwarden::LoginResult::NeedsPasskey:
                 /*
                  * TODO: Passkey Login Support
                 */

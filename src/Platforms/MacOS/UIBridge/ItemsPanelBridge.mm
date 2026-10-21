@@ -1,8 +1,33 @@
 #import "ItemsPanelBridge.h"
 #import <Cocoa/Cocoa.h>
 #import "clientwarden-Swift.h"
-#include "Vault.h"
+#include "vault_manager/vault_manager.h"
+#include "items/bank_account_item/bank_account_item.h"
+#include "items/card_item/card_item.h"
+#include "items/drivers_license_item/drivers_license_item.h"
+#include "items/identity_item/identity_item.h"
+#include "items/login_item/login_item.h"
+#include "items/note_item/note_item.h"
+#include "items/passport_item/passport_item.h"
+#include "items/ssh_key_item/ssh_key_item.h"
 #include "ItemElements.h"
+
+/*
+ * Creates an unsaved item of the requested type through its builder class.
+ */
+static std::shared_ptr<clientwarden::GenericItem> NewItemOfType(std::shared_ptr<clientwarden::Orchestrator> orchestrator,
+    clientwarden::CipherType type) {
+    switch (type) {
+        case clientwarden::CipherType::Login: return orchestrator->createItem<clientwarden::LoginItem>();
+        case clientwarden::CipherType::Card: return orchestrator->createItem<clientwarden::CardItem>();
+        case clientwarden::CipherType::Identity: return orchestrator->createItem<clientwarden::IdentityItem>();
+        case clientwarden::CipherType::SshKey: return orchestrator->createItem<clientwarden::SshKeyItem>();
+        case clientwarden::CipherType::BankAccount: return orchestrator->createItem<clientwarden::BankAccountItem>();
+        case clientwarden::CipherType::DriversLicense: return orchestrator->createItem<clientwarden::DriversLicenseItem>();
+        case clientwarden::CipherType::Passport: return orchestrator->createItem<clientwarden::PassportItem>();
+        default: return orchestrator->createItem<clientwarden::NoteItem>();
+    }
+}
 
 @implementation ItemsPanelBridge
 
@@ -16,31 +41,31 @@
     [self cb_new];
 }
 
-ItemType ItemTypeFor(ClientWarden::CipherType type) {
+ItemType ItemTypeFor(clientwarden::CipherType type) {
     switch (type) {
-        case ClientWarden::CipherType::Login: return ItemTypeLogin;
-        case ClientWarden::CipherType::Card: return ItemTypeCard;
-        case ClientWarden::CipherType::Identity: return ItemTypeIdentity;
-        case ClientWarden::CipherType::Note: return ItemTypeNote;
-        case ClientWarden::CipherType::SSHKey: return ItemTypeSSHKey;
-        case ClientWarden::CipherType::BankAccount: return ItemTypeBankAccount;
-        case ClientWarden::CipherType::DriversLicense: return ItemTypeDriversLicense;
-        case ClientWarden::CipherType::Passport: return ItemTypePassport;
+        case clientwarden::CipherType::Login: return ItemTypeLogin;
+        case clientwarden::CipherType::Card: return ItemTypeCard;
+        case clientwarden::CipherType::Identity: return ItemTypeIdentity;
+        case clientwarden::CipherType::Note: return ItemTypeNote;
+        case clientwarden::CipherType::SshKey: return ItemTypeSSHKey;
+        case clientwarden::CipherType::BankAccount: return ItemTypeBankAccount;
+        case clientwarden::CipherType::DriversLicense: return ItemTypeDriversLicense;
+        case clientwarden::CipherType::Passport: return ItemTypePassport;
         default: return ItemTypeNote;
     }
 }
 
-ClientwardenImage* PlaceholderImageFor(ClientWarden::CipherType type) {
+ClientwardenImage* PlaceholderImageFor(clientwarden::CipherType type) {
     NSString* symbol = @"questionmark.app.dashed";
     switch (type) {
-        case ClientWarden::CipherType::Login: symbol = @"globe"; break;
-        case ClientWarden::CipherType::Card: symbol = @"creditcard"; break;
-        case ClientWarden::CipherType::Identity: symbol = @"person.text.rectangle"; break;
-        case ClientWarden::CipherType::Note: symbol = @"pad.header"; break;
-        case ClientWarden::CipherType::SSHKey: symbol = @"key.viewfinder"; break;
-        case ClientWarden::CipherType::BankAccount: symbol = @"dollarsign.circle"; break;
-        case ClientWarden::CipherType::DriversLicense: symbol = @"licenseplate"; break;
-        case ClientWarden::CipherType::Passport: symbol = @"list.bullet.rectangle.portrait"; break;
+        case clientwarden::CipherType::Login: symbol = @"globe"; break;
+        case clientwarden::CipherType::Card: symbol = @"creditcard"; break;
+        case clientwarden::CipherType::Identity: symbol = @"person.text.rectangle"; break;
+        case clientwarden::CipherType::Note: symbol = @"pad.header"; break;
+        case clientwarden::CipherType::SshKey: symbol = @"key.viewfinder"; break;
+        case clientwarden::CipherType::BankAccount: symbol = @"dollarsign.circle"; break;
+        case clientwarden::CipherType::DriversLicense: symbol = @"licenseplate"; break;
+        case clientwarden::CipherType::Passport: symbol = @"list.bullet.rectangle.portrait"; break;
         default: break;
     }
     return [[ClientwardenImage alloc] initWithType:ImageTypeSystemImage path:symbol];
@@ -50,34 +75,36 @@ ClientwardenImage* PlaceholderImageFor(ClientWarden::CipherType type) {
  * Builds the list rows: decrypted name, item type and an icon (the
  * site favicon for logins, an SF Symbol otherwise).
  */
-NSArray<ItemElement*>* MakeItemElements(const std::vector<ClientWarden::ItemSummary>& ciphers) {
-    ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+NSArray<ItemElement*>* MakeItemElements(const std::vector<clientwarden::ItemSummary>& ciphers) {
+    std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
+    std::shared_ptr<clientwarden::Orchestrator> orchestrator = v_inst->getOrchestrator();
     NSMutableArray<ItemElement*>* items = [NSMutableArray array];
 
-    for (const auto& cipher : ciphers) {
-        std::optional<ClientWarden::Item> item = v_inst.GetItem(cipher.id);
-        if (!item) {
-            continue;
-        }
+    for (const clientwarden::ItemSummary& cipher : ciphers) {
+        try {
+            NSUUID* uuid = [[NSUUID alloc] initWithUUIDString:[NSString stringWithUTF8String: cipher.m_id.c_str()]];
 
-        NSUUID* uuid = [[NSUUID alloc] initWithUUIDString:[NSString stringWithUTF8String: cipher.id.c_str()]];
+            clientwarden::SecureString c_name = orchestrator->getGenericItem(cipher.m_id)->getName();
+            NSString* name = [[NSString alloc] initWithBytes:c_name.data() length:c_name.size() encoding:NSUTF8StringEncoding];
 
-        ClientWarden::SecretString c_name = item->Name();
-        NSString* name = [[NSString alloc] initWithBytes:c_name.data() length:c_name.size() encoding:NSUTF8StringEncoding];
-
-        ClientwardenImage* img = nil;
-        if (cipher.type == ClientWarden::CipherType::Login) {
-            std::vector<ClientWarden::SecretString> uris = item->Uris();
-            std::optional<std::string> icon = uris.empty() ? std::nullopt : v_inst.Icon(uris[0]);
-            if (icon) {
-                img = [[ClientwardenImage alloc] initWithType:ImageTypeAppSupport path:[NSString stringWithUTF8String: icon->c_str()]];
+            ClientwardenImage* img = nil;
+            if (cipher.m_type == clientwarden::CipherType::Login) {
+                std::vector<clientwarden::SecureString> uris = orchestrator->getItem<clientwarden::LoginItem>(cipher.m_id)->getWebsites();
+                std::optional<std::filesystem::path> icon = uris.empty() ? std::nullopt : orchestrator->getIcon(uris[0]);
+                if (icon) {
+                    img = [[ClientwardenImage alloc] initWithType:ImageTypeAppSupport path:[NSString stringWithUTF8String: icon->c_str()]];
+                }
             }
-        }
-        if (!img) {
-            img = PlaceholderImageFor(cipher.type);
-        }
+            if (!img) {
+                img = PlaceholderImageFor(cipher.m_type);
+            }
 
-        [items addObject:[[ItemElement alloc] initWithName:name uuid:uuid type:ItemTypeFor(cipher.type) image:img]];
+            [items addObject:[[ItemElement alloc] initWithName:name uuid:uuid type:ItemTypeFor(cipher.m_type) image:img]];
+        } catch (const clientwarden::VaultError&) {
+            /*
+             * Skip items this client can't open yet (e.g. organisation items).
+             */
+        }
     }
 
     return items;
@@ -90,11 +117,11 @@ NSArray<ItemElement*>* MakeItemElements(const std::vector<ClientWarden::ItemSumm
 + (void)cb_query {
     ItemsPanel.instance.cb_query = ^NSArray* _Nonnull(NSString* name) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
-            std::vector<ClientWarden::ItemSummary> ciphers = v_inst.Query()
-                .NotInBin()
-                .NameContains(name.UTF8String)
-                .Run();
+            std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
+            std::vector<clientwarden::ItemSummary> ciphers = v_inst->getOrchestrator()->query()
+                .notInBin()
+                .nameContains(name.UTF8String)
+                .run();
 
             return MakeItemElements(ciphers);
         } catch (...) {
@@ -115,18 +142,18 @@ NSArray<ItemElement*>* MakeItemElements(const std::vector<ClientWarden::ItemSumm
 + (void)cb_new {
     ItemsPanel.instance.cb_new = ^ItemElement* _Nullable(ItemType i_type) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
 
-            ClientWarden::CipherType type;
+            clientwarden::CipherType type;
             switch (i_type) {
-                case ItemTypeLogin: type = ClientWarden::CipherType::Login; break;
-                case ItemTypeCard: type = ClientWarden::CipherType::Card; break;
-                case ItemTypeIdentity: type = ClientWarden::CipherType::Identity; break;
-                case ItemTypeNote: type = ClientWarden::CipherType::Note; break;
-                case ItemTypeSSHKey: type = ClientWarden::CipherType::SSHKey; break;
-                case ItemTypeBankAccount: type = ClientWarden::CipherType::BankAccount; break;
-                case ItemTypeDriversLicense: type = ClientWarden::CipherType::DriversLicense; break;
-                case ItemTypePassport: type = ClientWarden::CipherType::Passport; break;
+                case ItemTypeLogin: type = clientwarden::CipherType::Login; break;
+                case ItemTypeCard: type = clientwarden::CipherType::Card; break;
+                case ItemTypeIdentity: type = clientwarden::CipherType::Identity; break;
+                case ItemTypeNote: type = clientwarden::CipherType::Note; break;
+                case ItemTypeSSHKey: type = clientwarden::CipherType::SshKey; break;
+                case ItemTypeBankAccount: type = clientwarden::CipherType::BankAccount; break;
+                case ItemTypeDriversLicense: type = clientwarden::CipherType::DriversLicense; break;
+                case ItemTypePassport: type = clientwarden::CipherType::Passport; break;
                 default:
                     dispatch_async(dispatch_get_main_queue(), ^{
                         Toast* toast = [[Toast alloc] initWithMessage:@"Failed to create new item: Invalid Item Type"];
@@ -135,11 +162,11 @@ NSArray<ItemElement*>* MakeItemElements(const std::vector<ClientWarden::ItemSumm
                     return nil;
             }
 
-            ClientWarden::Item item = v_inst.NewItem(type);
-            item.SetName("New Item");
-            v_inst.Save(item);
+            std::shared_ptr<clientwarden::GenericItem> item = NewItemOfType(v_inst->getOrchestrator(), type);
+            item->setName("New Item");
+            item->commit();
             
-            NSString* s_uuid = [NSString stringWithUTF8String: item.Id().c_str()];
+            NSString* s_uuid = [NSString stringWithUTF8String: item->getId().c_str()];
             NSUUID* uuid = [[NSUUID alloc] initWithUUIDString: s_uuid];
 
             return [[ItemElement alloc] initWithName:@"New Item" uuid:uuid type:i_type image:PlaceholderImageFor(type)];

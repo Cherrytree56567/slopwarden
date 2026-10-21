@@ -1,7 +1,7 @@
 #import "UnlockBridge.h"
 #import <Cocoa/Cocoa.h>
 #import "clientwarden-Swift.h"
-#include "Vault.h"
+#include "vault_manager/vault_manager.h"
 
 @implementation UnlockBridge
 
@@ -24,9 +24,9 @@
 + (void)cb_getInfo {
     Unlock.instance.cb_getInfo = ^BOOL {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
 
-            std::string name = v_inst.ProfileName();
+            clientwarden::SecureString name = v_inst->getProfile()->getName();
             NSString *n_name = [NSString stringWithUTF8String: name.c_str()];
 
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -53,12 +53,12 @@
 + (void)cb_unlock {
     Unlock.instance.cb_unlock = ^BOOL(NSString* password) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
 
-            ClientWarden::UnlockResult result = v_inst.Unlock(password.UTF8String);
+            clientwarden::UnlockResult result = v_inst->unlock(password.UTF8String);
 
-            if (result != ClientWarden::UnlockResult::Success) {
-                NSString* message = result == ClientWarden::UnlockResult::InvalidPassword ? @"Invalid Password" : @"Failed to Unlock Vault";
+            if (result != clientwarden::UnlockResult::Success) {
+                NSString* message = result == clientwarden::UnlockResult::InvalidPassword ? @"Invalid Password" : @"Failed to Unlock Vault";
                 dispatch_async(dispatch_get_main_queue(), ^{
                     Toast* toast = [[Toast alloc] initWithMessage:message];
                     [[ToastStore instance] addToast:toast];
@@ -90,9 +90,9 @@
 + (void)cb_unlockBio {
     Unlock.instance.cb_unlockBio = ^BOOL() {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
 
-            if (v_inst.UnlockWithBiometrics() != ClientWarden::UnlockResult::Success) {
+            if (v_inst->unlockWithBiometrics() != clientwarden::UnlockResult::Success) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     Toast* toast = [[Toast alloc] initWithMessage:@"Failed to Unlock"];
                     [[ToastStore instance] addToast:toast];

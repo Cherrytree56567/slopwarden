@@ -1,7 +1,7 @@
 #import "LoginBridge.h"
 #import <Cocoa/Cocoa.h>
 #import "clientwarden-Swift.h"
-#include "Vault.h"
+#include "vault_manager/vault_manager.h"
 
 @implementation LoginBridge
 
@@ -25,20 +25,20 @@
     Login.instance.cb_login = ^BOOL(NSString* email, NSString* password, NSString* vaultURL, NSString* mainURL, 
                                                 NSString* apiURL, NSString* wssURL, NSString* iconURL) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
 
             /*
              * The main URL isn't needed by the vault; Bitwarden only uses it
              * for the web UI.
             */
-            v_inst.SetServer(ClientWarden::ServerUrls { vaultURL.UTF8String, apiURL.UTF8String, iconURL.UTF8String, wssURL.UTF8String });
+            v_inst->setServer(clientwarden::ServerUrls { vaultURL.UTF8String, apiURL.UTF8String, iconURL.UTF8String, wssURL.UTF8String });
 
-            ClientWarden::LoginResult result = v_inst.Login(email.UTF8String, password.UTF8String);
+            clientwarden::LoginResult result = v_inst->login(email.UTF8String, password.UTF8String);
 
             if (![self presentLoginResult:result]) {
                 return NO;
             }
-            if (result != ClientWarden::LoginResult::Success) {
+            if (result != clientwarden::LoginResult::Success) {
                 return YES;
             }
 
@@ -66,11 +66,11 @@
 + (void)cb_submitCode {
     Login.instance.cb_submitCode = ^BOOL(NSString* code) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
 
-            ClientWarden::LoginResult result = v_inst.SubmitCode(code.UTF8String);
+            clientwarden::LoginResult result = v_inst->submitCode(code.UTF8String);
 
-            if (result != ClientWarden::LoginResult::Success) {
+            if (result != clientwarden::LoginResult::Success) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     Login.instance.ViewType = LoginViewTypeLogin;
                     Toast* toast = [[Toast alloc] initWithMessage:@"Failed to Authenticate"];
@@ -101,8 +101,8 @@ static LoginBridge* p_loginBridge = nil;
  * Moves the login view to the next step for a login result, or shows why
  * it failed. Returns NO on failure.
  */
-+ (BOOL)presentLoginResult:(ClientWarden::LoginResult)result {
-    using ClientWarden::LoginResult;
++ (BOOL)presentLoginResult:(clientwarden::LoginResult)result {
+    using clientwarden::LoginResult;
 
     if (result == LoginResult::NeedsTotp || result == LoginResult::NeedsDeviceVerification || result == LoginResult::NeedsPasskey) {
         LoginViewType view = result == LoginResult::NeedsPasskey ? LoginViewTypePasskey : LoginViewTypeTOTP;
@@ -133,9 +133,9 @@ static LoginBridge* p_loginBridge = nil;
     Login.instance.cb_usePasskey = ^BOOL() {
         try {
             p_loginBridge = [LoginBridge new];
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
 
-            std::optional<ClientWarden::PasskeyRequest> passkey = v_inst.PendingPasskey();
+            std::optional<clientwarden::PasskeyRequest> passkey = v_inst->getPendingPasskey();
 
             if (!passkey) {
                 dispatch_async(dispatch_get_main_queue(), ^{
@@ -145,8 +145,8 @@ static LoginBridge* p_loginBridge = nil;
                 return NO;
             }
 
-            NSData* challenge = [NSData dataWithBytes:passkey->challenge.data() length:passkey->challenge.size()];
-            NSString* rpID = [NSString stringWithUTF8String:passkey->relyingParty.c_str()];
+            NSData* challenge = [NSData dataWithBytes:passkey->m_challenge.data() length:passkey->m_challenge.size()];
+            NSString* rpID = [NSString stringWithUTF8String:passkey->m_relying_party.c_str()];
             
             ASAuthorizationPlatformPublicKeyCredentialProvider* provider = 
                 [[ASAuthorizationPlatformPublicKeyCredentialProvider alloc] initWithRelyingPartyIdentifier:rpID];
@@ -174,7 +174,7 @@ static LoginBridge* p_loginBridge = nil;
 
 - (void)authorizationController:(ASAuthorizationController *)controller
     didCompleteWithAuthorization:(ASAuthorization *)authorization {
-    ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+    std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
 
     ASAuthorizationPlatformPublicKeyCredentialAssertion* cred =
         (ASAuthorizationPlatformPublicKeyCredentialAssertion *)authorization.credential;
@@ -188,8 +188,8 @@ static LoginBridge* p_loginBridge = nil;
         return std::span<const uint8_t>(static_cast<const uint8_t*>(data.bytes), data.length);
     };
 
-    bool result = v_inst.SubmitPasskey(bytes(credentialID), bytes(authData), bytes(clientData), bytes(signature)) ==
-        ClientWarden::LoginResult::Success;
+    bool result = v_inst->submitPasskey(bytes(credentialID), bytes(authData), bytes(clientData), bytes(signature)) ==
+        clientwarden::LoginResult::Success;
 
     if (!result) {
         dispatch_async(dispatch_get_main_queue(), ^{

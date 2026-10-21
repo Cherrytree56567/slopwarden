@@ -1,7 +1,7 @@
 #import "SettingsBridge.h"
 #import <Cocoa/Cocoa.h>
 #import "clientwarden-Swift.h"
-#include "Vault.h"
+#include "vault_manager/vault_manager.h"
 
 @implementation SettingsBridge
 
@@ -27,9 +27,9 @@
 + (void)cb_logout {
     SettingsPanel.instance.cb_logout = ^BOOL() {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
             
-            v_inst.Logout();
+            v_inst->logout();
             return YES;
         } catch (...) {
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -45,9 +45,9 @@
 + (void)cb_getScrshot {
     SettingsPanel.instance.cb_getScrshot = ^BOOL() {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
             
-            return (BOOL)v_inst.Preferences().AllowScreenshots();
+            return (BOOL)v_inst->getSettings()->getAllowScreenshots();
         } catch (...) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 Toast* toast = [[Toast alloc] initWithMessage:@"Failed to get screenshot option"];
@@ -61,9 +61,9 @@
 + (void)cb_setScrshot {
     SettingsPanel.instance.cb_setScrshot = ^BOOL(BOOL value) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
             
-            v_inst.Preferences().SetAllowScreenshots((bool)value);
+            v_inst->getSettings()->setAllowScreenshots((bool)value);
 
             return YES;
         } catch (...) {
@@ -80,9 +80,9 @@
 + (void)cb_getBioUnlock {
     SettingsPanel.instance.cb_getBioUnlock = ^BOOL() {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
             
-            return (BOOL)v_inst.BiometricsEnabled();
+            return (BOOL)v_inst->biometricsEnabled();
         } catch (...) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 Toast* toast = [[Toast alloc] initWithMessage:@"Failed to get biometric unlock value"];
@@ -96,9 +96,9 @@
 + (void)cb_setBioUnlock {
     SettingsPanel.instance.cb_setBioUnlock = ^BOOL(BOOL value) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
 
-            return (BOOL)(value ? v_inst.EnableBiometrics() : v_inst.DisableBiometrics());
+            return (BOOL)(value ? v_inst->enableBiometrics() : v_inst->disableBiometrics());
         } catch (...) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 Toast* toast = [[Toast alloc] initWithMessage:@"Failed to set biometric unlock"];
@@ -113,9 +113,9 @@
 + (void)cb_getLockDelay {
     SettingsPanel.instance.cb_getLockDelay = ^NSInteger() {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
             
-            return (NSInteger)v_inst.Preferences().AutoLockSeconds();
+            return (NSInteger)v_inst->getSettings()->getAutoLockSeconds();
         } catch (...) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 Toast* toast = [[Toast alloc] initWithMessage:@"Failed to get Auto Lock Delay"];
@@ -129,9 +129,9 @@
 + (void)cb_setLockDelay {
     SettingsPanel.instance.cb_setLockDelay = ^BOOL(NSInteger value) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
             
-            v_inst.Preferences().SetAutoLockSeconds((int)value);
+            v_inst->getSettings()->setAutoLockSeconds((int)value);
 
             return YES;
         } catch (...) {

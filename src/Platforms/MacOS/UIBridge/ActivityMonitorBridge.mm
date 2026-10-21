@@ -2,7 +2,7 @@
 #import <Cocoa/Cocoa.h>
 #include <thread>
 #import "clientwarden-Swift.h"
-#include "Vault.h"
+#include "vault_manager/vault_manager.h"
 
 @implementation ActivityMonitorBridge
 
@@ -13,9 +13,9 @@
 + (void)cb_setLastInactivity {
     ActivityMonitor.instance.cb_setLastInactivity = ^BOOL(NSDate * _Nonnull date) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
 
-            v_inst.NoteActivity((time_t)[date timeIntervalSince1970]);
+            v_inst->noteActivity((time_t)[date timeIntervalSince1970]);
 
             return YES;
         } catch (...) {

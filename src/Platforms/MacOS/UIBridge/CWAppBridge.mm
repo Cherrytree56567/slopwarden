@@ -2,7 +2,7 @@
 #import <Cocoa/Cocoa.h>
 #include <thread>
 #import "clientwarden-Swift.h"
-#include "Vault.h"
+#include "vault_manager/vault_manager.h"
 
 @implementation CWAppBridge
 
@@ -23,11 +23,19 @@
  * remote logout, revoked session) so the window can follow.
  */
 + (void)observeVault {
-    ClientWarden::Vault::Instance().OnStateChange([](ClientWarden::AuthState state) {
+    clientwarden::VaultManager::instance().getActiveVault()->onStateChange([](clientwarden::VaultState state) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (state == ClientWarden::AuthState::LoggedOut) {
+            if (state == clientwarden::VaultState::Failed) {
+                /*
+                 * Tampered or corrupt data: the vault has dropped its keys and must be
+                 * restarted before it can be trusted again.
+                 */
                 ClientwardenWindow.instance.state = WindowStateLogin;
-            } else if (state == ClientWarden::AuthState::Unlockable) {
+                Toast* toast = [[Toast alloc] initWithMessage:@"Vault data failed an integrity check. Please restart ClientWarden."];
+                [[ToastStore instance] addToast:toast];
+            } else if (state == clientwarden::VaultState::LoggedOut) {
+                ClientwardenWindow.instance.state = WindowStateLogin;
+            } else if (state == clientwarden::VaultState::Unlockable) {
                 ClientwardenWindow.instance.state = WindowStateUnlock;
             }
         });
@@ -42,11 +50,11 @@
 + (void)cb_getState {
     ClientwardenWindow.instance.cb_getState = ^WindowState {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
 
-            if (v_inst.State() == ClientWarden::AuthState::Unlockable) {
+            if (v_inst->getState() == clientwarden::VaultState::Unlockable) {
                 return WindowStateUnlock;
-            } else if (v_inst.State() == ClientWarden::AuthState::Unlocked) {
+            } else if (v_inst->getState() == clientwarden::VaultState::Unlocked) {
                 return WindowStateVault;
             } else {
                 return WindowStateLogin;
@@ -67,8 +75,8 @@
 + (void)cb_lock {
     ClientwardenWindow.instance.cb_lock = ^BOOL {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
-            v_inst.Lock();
+            std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
+            v_inst->lock();
             return YES;
         } catch (...) {
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -83,7 +91,7 @@
 + (void)cb_shutdown {
     ClientwardenWindow.instance.cb_shutdown = ^BOOL {
         try {
-            ClientWarden::Vault::DestroyInstance();
+            clientwarden::VaultManager::destroyInstance();
 
             return (BOOL)true;
         } catch (...) {

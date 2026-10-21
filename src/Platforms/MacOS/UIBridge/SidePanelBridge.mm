@@ -1,24 +1,38 @@
 #import "SidePanelBridge.h"
 #import <Cocoa/Cocoa.h>
 #import "clientwarden-Swift.h"
+#include <ctime>
+#include <functional>
 #include <vector>
-#include "Util/Util.h"
-#include "Vault.h"
+#include "items/bank_account_item/bank_account_item.h"
+#include "items/card_item/card_item.h"
+#include "items/drivers_license_item/drivers_license_item.h"
+#include "items/identity_item/identity_item.h"
+#include "items/login_item/login_item.h"
+#include "items/note_item/note_item.h"
+#include "items/passport_item/passport_item.h"
+#include "items/ssh_key_item/ssh_key_item.h"
+#include "utils/timestamp/timestamp.h"
+#include "vault_manager/vault_manager.h"
 
 namespace {
-    using ClientWarden::CipherType;
-    using ClientWarden::FieldId;
-    using ClientWarden::Item;
-    using ClientWarden::SecretString;
-    namespace Fields = ClientWarden::Fields;
+    using clientwarden::BankAccountItem;
+    using clientwarden::CardItem;
+    using clientwarden::CipherType;
+    using clientwarden::DriversLicenseItem;
+    using clientwarden::GenericItem;
+    using clientwarden::IdentityItem;
+    using clientwarden::LoginItem;
+    using clientwarden::NoteItem;
+    using clientwarden::Orchestrator;
+    using clientwarden::PassportItem;
+    using clientwarden::SecureString;
+    using clientwarden::SshKeyItem;
+    using clientwarden::Vault;
 
     constexpr const char* NoFolder = "00000000-0000-0000-0000-000000000000";
 
-    NSString* NS(const SecretString& s) {
-        return [[NSString alloc] initWithBytes:s.data() length:s.size() encoding:NSUTF8StringEncoding] ?: @"";
-    }
-
-    NSString* NS(const std::string& s) {
+    NSString* NS(std::string_view s) {
         return [[NSString alloc] initWithBytes:s.data() length:s.size() encoding:NSUTF8StringEncoding] ?: @"";
     }
 
@@ -26,19 +40,42 @@ namespace {
         return s ? std::string_view(s.UTF8String) : std::string_view();
     }
 
+    std::shared_ptr<Vault> ActiveVault() {
+        return clientwarden::VaultManager::instance().getActiveVault();
+    }
+
     /*
      * Vault ids are lowercase; NSUUID prints uppercase.
     */
-    std::string ItemId(NSUUID* uuid) {
-        return ClientWarden::ToLower(uuid.UUIDString.UTF8String);
+    SecureString ItemId(NSUUID* uuid) {
+        return clientwarden::toLower(uuid.UUIDString.UTF8String);
     }
 
-    Item Load(ClientWarden::Vault& vault, NSUUID* uuid) {
-        std::optional<Item> item = vault.GetItem(ItemId(uuid));
-        if (!item) {
-            throw ClientWarden::VaultError("item not found");
+    /*
+     * Loads an item as its concrete type (so the typed field rows below can
+     * downcast it), throwing VaultError if it doesn't exist.
+    */
+    std::shared_ptr<GenericItem> LoadId(std::shared_ptr<Vault> vault, std::string_view id) {
+        std::shared_ptr<Orchestrator> orchestrator = vault->getOrchestrator();
+        std::optional<CipherType> type = orchestrator->getItemType(id);
+        if (!type) {
+            throw clientwarden::VaultError("item not found");
         }
-        return std::move(*item);
+        switch (*type) {
+            case CipherType::Login: return orchestrator->getItem<LoginItem>(id);
+            case CipherType::Card: return orchestrator->getItem<CardItem>(id);
+            case CipherType::Identity: return orchestrator->getItem<IdentityItem>(id);
+            case CipherType::Note: return orchestrator->getItem<NoteItem>(id);
+            case CipherType::SshKey: return orchestrator->getItem<SshKeyItem>(id);
+            case CipherType::BankAccount: return orchestrator->getItem<BankAccountItem>(id);
+            case CipherType::DriversLicense: return orchestrator->getItem<DriversLicenseItem>(id);
+            case CipherType::Passport: return orchestrator->getItem<PassportItem>(id);
+            default: return orchestrator->getGenericItem(id);
+        }
+    }
+
+    std::shared_ptr<GenericItem> Load(std::shared_ptr<Vault> vault, NSUUID* uuid) {
+        return LoadId(vault, ItemId(uuid));
     }
 
     void ShowToast(NSString* message) {
@@ -53,7 +90,7 @@ namespace {
             case CipherType::Card: return ItemTypeCard;
             case CipherType::Identity: return ItemTypeIdentity;
             case CipherType::Note: return ItemTypeNote;
-            case CipherType::SSHKey: return ItemTypeSSHKey;
+            case CipherType::SshKey: return ItemTypeSSHKey;
             case CipherType::BankAccount: return ItemTypeBankAccount;
             case CipherType::DriversLicense: return ItemTypeDriversLicense;
             case CipherType::Passport: return ItemTypePassport;
@@ -65,14 +102,15 @@ namespace {
      * Logins show the site's favicon (or a globe); everything else a
      * fixed SF Symbol per type.
     */
-    ClientwardenImage* IconFor(ClientWarden::Vault& vault, const Item& item) {
+    ClientwardenImage* IconFor(std::shared_ptr<Vault> vault, GenericItem& item) {
         NSString* symbol = @"questionmark.app.dashed";
-        switch (item.Type()) {
+        switch (item.getType()) {
             case CipherType::Login: {
-                std::vector<SecretString> uris = item.Uris();
+                std::vector<SecureString> uris = static_cast<LoginItem&>(item).getWebsites();
                 if (!uris.empty()) {
-                    if (auto path = vault.Icon(std::string_view(uris[0].data(), uris[0].size()))) {
-                        return [[ClientwardenImage alloc] initWithType:ImageTypeAppSupport path:NS(*path)];
+                    if (std::optional<std::filesystem::path> path = vault->getOrchestrator()->getIcon(uris[0])) {
+                        return [[ClientwardenImage alloc] initWithType:ImageTypeAppSupport
+                                                                  path:[NSString stringWithUTF8String:path->c_str()]];
                     }
                 }
                 symbol = @"globe";
@@ -81,7 +119,7 @@ namespace {
             case CipherType::Card: symbol = @"creditcard"; break;
             case CipherType::Identity: symbol = @"person.text.rectangle"; break;
             case CipherType::Note: symbol = @"pad.header"; break;
-            case CipherType::SSHKey: symbol = @"key.viewfinder"; break;
+            case CipherType::SshKey: symbol = @"key.viewfinder"; break;
             case CipherType::BankAccount: symbol = @"dollarsign.circle"; break;
             case CipherType::DriversLicense: symbol = @"licenseplate"; break;
             case CipherType::Passport: symbol = @"list.bullet.rectangle.portrait"; break;
@@ -91,87 +129,103 @@ namespace {
     }
 
     /*
-     * One-to-one mapping between a SidePanel row and a vault field. The
+     * One-to-one mapping between a SidePanel row and a typed item field. The
      * same titles are used to display and to save, so the two can't drift
      * apart. Rows that combine several fields (names, card expiry,
      * locality, websites, TOTP) are handled separately.
     */
     struct FieldRow {
         const char* title;
-        FieldId field;
+        std::function<SecureString(GenericItem&)> get;
+        std::function<void(GenericItem&, std::string_view)> set;
         GenericItemType type;
     };
+
+    /*
+     * Builds a row from a typed getter/setter pair. The item passed in is
+     * always loaded as T (see LoadId), so the downcast is safe.
+    */
+    template <typename T>
+    FieldRow R(const char* title, SecureString (T::*get)() const, T& (T::*set)(std::string_view), GenericItemType type) {
+        return {
+            title,
+            [get](GenericItem& item) { return (static_cast<T&>(item).*get)(); },
+            [set](GenericItem& item, std::string_view value) { (static_cast<T&>(item).*set)(value); },
+            type
+        };
+    }
 
     const std::vector<FieldRow>& RowsFor(CipherType type) {
         static const std::vector<FieldRow> none;
         static const std::vector<FieldRow> login = {
-            { "Username", Fields::Login::Username, GenericItemTypeGeneric },
-            { "Password", Fields::Login::Password, GenericItemTypePassword },
+            R<LoginItem>("Username", &LoginItem::getUsername, &LoginItem::setUsername, GenericItemTypeGeneric),
+            R<LoginItem>("Password", &LoginItem::getPassword, &LoginItem::setPassword, GenericItemTypePassword),
         };
         static const std::vector<FieldRow> card = {
-            { "Brand", Fields::Card::Brand, GenericItemTypeGeneric },
-            { "Cardholder Name", Fields::Card::CardholderName, GenericItemTypeGeneric },
-            { "Number", Fields::Card::Number, GenericItemTypePassword },
-            { "Code", Fields::Card::Code, GenericItemTypePassword },
+            R<CardItem>("Brand", &CardItem::getBrand, &CardItem::setBrand, GenericItemTypeGeneric),
+            R<CardItem>("Cardholder Name", &CardItem::getCardholderName, &CardItem::setCardholderName, GenericItemTypeGeneric),
+            R<CardItem>("Number", &CardItem::getNumber, &CardItem::setNumber, GenericItemTypePassword),
+            R<CardItem>("Code", &CardItem::getCode, &CardItem::setCode, GenericItemTypePassword),
         };
         static const std::vector<FieldRow> identity = {
-            { "Username", Fields::Identity::Username, GenericItemTypeGeneric },
-            { "Company", Fields::Identity::Company, GenericItemTypeGeneric },
-            { "SSN", Fields::Identity::SSN, GenericItemTypePassword },
-            { "Passport Number", Fields::Identity::PassportNumber, GenericItemTypePassword },
-            { "Licence Number", Fields::Identity::LicenseNumber, GenericItemTypeGeneric },
-            { "Email", Fields::Identity::Email, GenericItemTypeGeneric },
-            { "Phone", Fields::Identity::Phone, GenericItemTypeGeneric },
-            { "Address 1", Fields::Identity::Address1, GenericItemTypeGeneric },
-            { "Address 2", Fields::Identity::Address2, GenericItemTypeGeneric },
-            { "Address 3", Fields::Identity::Address3, GenericItemTypeGeneric },
+            R<IdentityItem>("Username", &IdentityItem::getUsername, &IdentityItem::setUsername, GenericItemTypeGeneric),
+            R<IdentityItem>("Company", &IdentityItem::getCompany, &IdentityItem::setCompany, GenericItemTypeGeneric),
+            R<IdentityItem>("SSN", &IdentityItem::getSsn, &IdentityItem::setSsn, GenericItemTypePassword),
+            R<IdentityItem>("Passport Number", &IdentityItem::getPassportNumber, &IdentityItem::setPassportNumber, GenericItemTypePassword),
+            R<IdentityItem>("Licence Number", &IdentityItem::getLicenseNumber, &IdentityItem::setLicenseNumber, GenericItemTypeGeneric),
+            R<IdentityItem>("Email", &IdentityItem::getEmail, &IdentityItem::setEmail, GenericItemTypeGeneric),
+            R<IdentityItem>("Phone", &IdentityItem::getPhone, &IdentityItem::setPhone, GenericItemTypeGeneric),
+            R<IdentityItem>("Address 1", &IdentityItem::getAddress1, &IdentityItem::setAddress1, GenericItemTypeGeneric),
+            R<IdentityItem>("Address 2", &IdentityItem::getAddress2, &IdentityItem::setAddress2, GenericItemTypeGeneric),
+            R<IdentityItem>("Address 3", &IdentityItem::getAddress3, &IdentityItem::setAddress3, GenericItemTypeGeneric),
         };
         static const std::vector<FieldRow> sshKey = {
-            { "Fingerprint", Fields::SSHKey::Fingerprint, GenericItemTypeGeneric },
-            { "Private Key", Fields::SSHKey::PrivateKey, GenericItemTypeMl_password },
-            { "Public Key", Fields::SSHKey::PublicKey, GenericItemTypePassword },
+            R<SshKeyItem>("Fingerprint", &SshKeyItem::getFingerprint, &SshKeyItem::setFingerprint, GenericItemTypeGeneric),
+            R<SshKeyItem>("Private Key", &SshKeyItem::getPrivateKey, &SshKeyItem::setPrivateKey, GenericItemTypeMl_password),
+            R<SshKeyItem>("Public Key", &SshKeyItem::getPublicKey, &SshKeyItem::setPublicKey, GenericItemTypePassword),
         };
         static const std::vector<FieldRow> bankAccount = {
-            { "Bank Name", Fields::BankAccount::BankName, GenericItemTypeGeneric },
-            { "Name On Account", Fields::BankAccount::NameOnAccount, GenericItemTypeGeneric },
-            { "Account Type", Fields::BankAccount::AccountType, GenericItemTypeGeneric },
-            { "Account Number", Fields::BankAccount::AccountNumber, GenericItemTypePassword },
-            { "Routing Number", Fields::BankAccount::RoutingNumber, GenericItemTypePassword },
-            { "Branch Number", Fields::BankAccount::BranchNumber, GenericItemTypeGeneric },
-            { "Pin", Fields::BankAccount::Pin, GenericItemTypePassword },
-            { "Swift Code", Fields::BankAccount::SwiftCode, GenericItemTypeGeneric },
-            { "IBAN", Fields::BankAccount::Iban, GenericItemTypePassword },
-            { "Bank Contact Phone", Fields::BankAccount::BankContactPhone, GenericItemTypeGeneric },
+            R<BankAccountItem>("Bank Name", &BankAccountItem::getBankName, &BankAccountItem::setBankName, GenericItemTypeGeneric),
+            R<BankAccountItem>("Name On Account", &BankAccountItem::getNameOnAccount, &BankAccountItem::setNameOnAccount, GenericItemTypeGeneric),
+            R<BankAccountItem>("Account Type", &BankAccountItem::getAccountType, &BankAccountItem::setAccountType, GenericItemTypeGeneric),
+            R<BankAccountItem>("Account Number", &BankAccountItem::getAccountNumber, &BankAccountItem::setAccountNumber, GenericItemTypePassword),
+            R<BankAccountItem>("Routing Number", &BankAccountItem::getRoutingNumber, &BankAccountItem::setRoutingNumber, GenericItemTypePassword),
+            R<BankAccountItem>("Branch Number", &BankAccountItem::getBranchNumber, &BankAccountItem::setBranchNumber, GenericItemTypeGeneric),
+            R<BankAccountItem>("Pin", &BankAccountItem::getPin, &BankAccountItem::setPin, GenericItemTypePassword),
+            R<BankAccountItem>("Swift Code", &BankAccountItem::getSwiftCode, &BankAccountItem::setSwiftCode, GenericItemTypeGeneric),
+            R<BankAccountItem>("IBAN", &BankAccountItem::getIban, &BankAccountItem::setIban, GenericItemTypePassword),
+            R<BankAccountItem>("Bank Contact Phone", &BankAccountItem::getBankContactPhone, &BankAccountItem::setBankContactPhone, GenericItemTypeGeneric),
         };
         static const std::vector<FieldRow> driversLicense = {
-            { "Date of Birth", Fields::DriversLicense::DateOfBirth, GenericItemTypeDate_3 },
-            { "License Number", Fields::DriversLicense::LicenseNumber, GenericItemTypePassword },
-            { "Issuing Country", Fields::DriversLicense::IssuingCountry, GenericItemTypeGeneric },
-            { "Issuing State", Fields::DriversLicense::IssuingState, GenericItemTypeGeneric },
-            { "Issuing Date", Fields::DriversLicense::IssueDate, GenericItemTypeDate_3 },
-            { "Expiration Date", Fields::DriversLicense::ExpirationDate, GenericItemTypeDate_3 },
-            { "Issuing Authority", Fields::DriversLicense::IssuingAuthority, GenericItemTypeGeneric },
-            { "License Class", Fields::DriversLicense::LicenseClass, GenericItemTypeGeneric },
+            R<DriversLicenseItem>("Date of Birth", &DriversLicenseItem::getDateOfBirth, &DriversLicenseItem::setDateOfBirth, GenericItemTypeDate_3),
+            R<DriversLicenseItem>("License Number", &DriversLicenseItem::getLicenseNumber, &DriversLicenseItem::setLicenseNumber, GenericItemTypePassword),
+            R<DriversLicenseItem>("Issuing Country", &DriversLicenseItem::getIssuingCountry, &DriversLicenseItem::setIssuingCountry, GenericItemTypeGeneric),
+            R<DriversLicenseItem>("Issuing State", &DriversLicenseItem::getIssuingState, &DriversLicenseItem::setIssuingState, GenericItemTypeGeneric),
+            R<DriversLicenseItem>("Issuing Date", &DriversLicenseItem::getIssueDate, &DriversLicenseItem::setIssueDate, GenericItemTypeDate_3),
+            R<DriversLicenseItem>("Expiration Date", &DriversLicenseItem::getExpirationDate, &DriversLicenseItem::setExpirationDate, GenericItemTypeDate_3),
+            R<DriversLicenseItem>("Issuing Authority", &DriversLicenseItem::getIssuingAuthority, &DriversLicenseItem::setIssuingAuthority, GenericItemTypeGeneric),
+            R<DriversLicenseItem>("License Class", &DriversLicenseItem::getLicenseClass, &DriversLicenseItem::setLicenseClass, GenericItemTypeGeneric),
         };
         static const std::vector<FieldRow> passport = {
-            { "Date Of Birth", Fields::Passport::DateOfBirth, GenericItemTypeDate_3 },
-            { "Sex", Fields::Passport::Sex, GenericItemTypeGeneric },
-            { "Birth Place", Fields::Passport::BirthPlace, GenericItemTypeGeneric },
-            { "Nationality", Fields::Passport::Nationality, GenericItemTypeGeneric },
-            { "Issuing Country", Fields::Passport::IssuingCountry, GenericItemTypeGeneric },
-            { "Passport Number", Fields::Passport::PassportNumber, GenericItemTypeGeneric },
-            { "Passport Type", Fields::Passport::PassportType, GenericItemTypeGeneric },
-            { "National Identification Number", Fields::Passport::NationalIdentificationNumber, GenericItemTypeGeneric },
-            { "Issuing Authority", Fields::Passport::IssuingAuthority, GenericItemTypeGeneric },
-            { "Issue Date", Fields::Passport::IssueDate, GenericItemTypeDate_3 },
-            { "Expiration Date", Fields::Passport::ExpirationDate, GenericItemTypeDate_3 },
+            R<PassportItem>("Date Of Birth", &PassportItem::getDateOfBirth, &PassportItem::setDateOfBirth, GenericItemTypeDate_3),
+            R<PassportItem>("Sex", &PassportItem::getSex, &PassportItem::setSex, GenericItemTypeGeneric),
+            R<PassportItem>("Birth Place", &PassportItem::getBirthPlace, &PassportItem::setBirthPlace, GenericItemTypeGeneric),
+            R<PassportItem>("Nationality", &PassportItem::getNationality, &PassportItem::setNationality, GenericItemTypeGeneric),
+            R<PassportItem>("Issuing Country", &PassportItem::getIssuingCountry, &PassportItem::setIssuingCountry, GenericItemTypeGeneric),
+            R<PassportItem>("Passport Number", &PassportItem::getPassportNumber, &PassportItem::setPassportNumber, GenericItemTypeGeneric),
+            R<PassportItem>("Passport Type", &PassportItem::getPassportType, &PassportItem::setPassportType, GenericItemTypeGeneric),
+            R<PassportItem>("National Identification Number", &PassportItem::getNationalIdentificationNumber,
+                &PassportItem::setNationalIdentificationNumber, GenericItemTypeGeneric),
+            R<PassportItem>("Issuing Authority", &PassportItem::getIssuingAuthority, &PassportItem::setIssuingAuthority, GenericItemTypeGeneric),
+            R<PassportItem>("Issue Date", &PassportItem::getIssueDate, &PassportItem::setIssueDate, GenericItemTypeDate_3),
+            R<PassportItem>("Expiration Date", &PassportItem::getExpirationDate, &PassportItem::setExpirationDate, GenericItemTypeDate_3),
         };
 
         switch (type) {
             case CipherType::Login: return login;
             case CipherType::Card: return card;
             case CipherType::Identity: return identity;
-            case CipherType::SSHKey: return sshKey;
+            case CipherType::SshKey: return sshKey;
             case CipherType::BankAccount: return bankAccount;
             case CipherType::DriversLicense: return driversLicense;
             case CipherType::Passport: return passport;
@@ -183,10 +237,10 @@ namespace {
         return [[GenericItemData alloc] initWithTitle:title value:value type:type];
     }
 
-    NSString* Joined(const Item& item, std::initializer_list<FieldId> fields, NSString* separator) {
+    NSString* Joined(std::initializer_list<SecureString> values, NSString* separator) {
         NSMutableArray<NSString*>* parts = [NSMutableArray array];
-        for (FieldId f : fields) {
-            [parts addObject:NS(item.Get(f))];
+        for (const SecureString& value : values) {
+            [parts addObject:NS(value)];
         }
         return [parts componentsJoinedByString:separator];
     }
@@ -194,9 +248,9 @@ namespace {
     /*
      * Splits "a, b, c" into exactly `count` trimmed parts.
     */
-    std::vector<std::string> Split(NSString* value, NSString* separator, size_t count) {
+    std::vector<SecureString> Split(NSString* value, NSString* separator, size_t count) {
         NSArray<NSString*>* parts = [value ?: @"" componentsSeparatedByString:separator];
-        std::vector<std::string> out;
+        std::vector<SecureString> out;
         for (size_t i = 0; i < count; ++i) {
             NSString* part = i < parts.count ? [parts[i] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet] : @"";
             out.emplace_back(part.UTF8String);
@@ -204,55 +258,60 @@ namespace {
         return out;
     }
 
-    void Display(ClientWarden::Vault& vault, const Item& item, NSMutableArray<GenericItemData*>* rows,
+    void Display(std::shared_ptr<Vault> vault, GenericItem& item, NSMutableArray<GenericItemData*>* rows,
         NSMutableArray<PasswordHistoryItem*>* history) {
-        CipherType type = item.Type();
+        CipherType type = item.getType();
 
         if (type == CipherType::Identity) {
+            IdentityItem& identity = static_cast<IdentityItem&>(item);
             [rows addObject:[[GenericItemData alloc] initWithTitle:@"Name"
-                                                             value:NS(item.Get(Fields::Identity::Title))
-                                                           value_1:NS(item.Get(Fields::Identity::FirstName))
-                                                           value_2:NS(item.Get(Fields::Identity::MiddleName))
-                                                           value_3:NS(item.Get(Fields::Identity::LastName))]];
+                                                             value:NS(identity.getTitle())
+                                                           value_1:NS(identity.getFirstName())
+                                                           value_2:NS(identity.getMiddleName())
+                                                           value_3:NS(identity.getLastName())]];
         } else if (type == CipherType::DriversLicense) {
+            DriversLicenseItem& licence = static_cast<DriversLicenseItem&>(item);
             [rows addObject:[[GenericItemData alloc] initWithTitle:@"Name"
-                                                             value:NS(item.Get(Fields::DriversLicense::FirstName))
-                                                           value_1:NS(item.Get(Fields::DriversLicense::MiddleName))
-                                                           value_2:NS(item.Get(Fields::DriversLicense::LastName))]];
+                                                             value:NS(licence.getFirstName())
+                                                           value_1:NS(licence.getMiddleName())
+                                                           value_2:NS(licence.getLastName())]];
         } else if (type == CipherType::Passport) {
+            PassportItem& passport = static_cast<PassportItem&>(item);
             [rows addObject:[[GenericItemData alloc] initWithTitle:@"Name"
-                                                             value:NS(item.Get(Fields::Passport::GivenName))
-                                                           value_1:NS(item.Get(Fields::Passport::Surname))]];
+                                                             value:NS(passport.getGivenName())
+                                                           value_1:NS(passport.getSurname())]];
         }
 
         for (const FieldRow& row : RowsFor(type)) {
-            [rows addObject:Row(@(row.title), NS(item.Get(row.field)), row.type)];
+            [rows addObject:Row(@(row.title), NS(row.get(item)), row.type)];
         }
 
         if (type == CipherType::Card) {
-            NSString* expiration = Joined(item, { Fields::Card::ExpMonth, Fields::Card::ExpYear }, @"/");
-            [rows addObject:Row(@"Expiration Date", expiration, GenericItemTypeDate)];
+            CardItem& card = static_cast<CardItem&>(item);
+            [rows addObject:Row(@"Expiration Date", Joined({ card.getExpMonth(), card.getExpYear() }, @"/"), GenericItemTypeDate)];
         } else if (type == CipherType::Identity) {
-            NSString* locality = Joined(item, { Fields::Identity::PostalCode, Fields::Identity::City,
-                Fields::Identity::State, Fields::Identity::Country }, @", ");
+            IdentityItem& identity = static_cast<IdentityItem&>(item);
+            NSString* locality = Joined({ identity.getPostalCode(), identity.getCity(), identity.getState(),
+                identity.getCountry() }, @", ");
             [rows addObject:Row(@"Locality", locality, GenericItemTypeGeneric)];
         } else if (type == CipherType::Login) {
-            std::string id = item.Id();
+            LoginItem& login = static_cast<LoginItem&>(item);
+            SecureString id = login.getId();
 
             /*
              * The code is generated on demand so it stays current while
              * the panel is open.
             */
             [rows addObject:[[GenericItemData alloc] initWithTitle:@"Two Factor Authentication"
-                                                             value:NS(item.Get(Fields::Login::Totp))
+                                                             value:NS(login.getTotpSecret())
                                                               type:GenericItemTypeTotp
                                                         cb_getTOTP:^TOTPResult* _Nonnull {
                 try {
-                    std::optional<Item> current = ClientWarden::Vault::Instance().GetItem(id);
-                    if (auto code = current ? current->Totp() : std::nullopt) {
-                        return [[TOTPResult alloc] initWithRefreshDate:(int64_t)code->validUntil
-                                                              maxTimer:(NSInteger)code->period
-                                                                 value:NS(code->code)];
+                    std::shared_ptr<LoginItem> current = ActiveVault()->getOrchestrator()->getItem<LoginItem>(id);
+                    if (std::optional<clientwarden::TotpCode> code = current->getTotp(std::time(nullptr))) {
+                        return [[TOTPResult alloc] initWithRefreshDate:(int64_t)code->m_valid_until
+                                                              maxTimer:(NSInteger)code->m_period
+                                                                 value:NS(code->m_code)];
                     }
                 } catch (...) {
                 }
@@ -260,17 +319,17 @@ namespace {
             }]];
 
             NSMutableArray<NSString*>* websites = [NSMutableArray array];
-            for (const auto& uri : item.Uris()) {
+            for (const SecureString& uri : login.getWebsites()) {
                 [websites addObject:NS(uri)];
             }
             [rows addObject:Row(@"Websites", [websites componentsJoinedByString:@"\n"], GenericItemTypeWebsite)];
 
-            for (const auto& entry : item.PasswordHistory()) {
-                NSDate* date = [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)entry.lastUsed];
+            for (const clientwarden::PasswordHistoryEntry& entry : login.getPasswordHistory()) {
+                NSDate* date = [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)entry.m_last_used];
                 NSString* s_date = [NSDateFormatter localizedStringFromDate:date
                                                                   dateStyle:NSDateFormatterMediumStyle
                                                                   timeStyle:NSDateFormatterShortStyle];
-                [history addObject:[[PasswordHistoryItem alloc] initWithDate:s_date password:NS(entry.password)]];
+                [history addObject:[[PasswordHistoryItem alloc] initWithDate:s_date password:NS(entry.m_password)]];
             }
         }
     }
@@ -278,9 +337,9 @@ namespace {
     /*
      * Writes the SidePanel rows back into the item's type-specific fields.
     */
-    void Apply(Item& item, NSArray<GenericItemData*>* itemFields) {
-        CipherType type = item.Type();
-        const auto& rows = RowsFor(type);
+    void Apply(GenericItem& item, NSArray<GenericItemData*>* itemFields) {
+        CipherType type = item.getType();
+        const std::vector<FieldRow>& rows = RowsFor(type);
 
         for (GenericItemData* itemField in itemFields) {
             NSString* title = itemField.title;
@@ -288,7 +347,7 @@ namespace {
             bool matched = false;
             for (const FieldRow& row : rows) {
                 if ([title isEqualToString:@(row.title)]) {
-                    item.Set(row.field, View(itemField.value));
+                    row.set(item, View(itemField.value));
                     matched = true;
                     break;
                 }
@@ -298,40 +357,56 @@ namespace {
             }
 
             if (type == CipherType::Login && [title isEqualToString:@"Two Factor Authentication"]) {
-                item.Set(Fields::Login::Totp, View(itemField.value));
+                static_cast<LoginItem&>(item).setTotp(View(itemField.value));
             } else if (type == CipherType::Login && [title isEqualToString:@"Websites"]) {
-                for (const auto& uri : item.Uris()) {
-                    item.RemoveUri(std::string_view(uri.data(), uri.size()));
+                LoginItem& login = static_cast<LoginItem&>(item);
+                for (const SecureString& uri : login.getWebsites()) {
+                    login.removeWebsite(uri);
                 }
                 for (NSString* line in [itemField.value ?: @"" componentsSeparatedByString:@"\n"]) {
                     NSString* trimmed = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
                     if (trimmed.length > 0) {
-                        item.AddUri(View(trimmed));
+                        login.addWebsite(View(trimmed));
                     }
                 }
             } else if (type == CipherType::Card && [title isEqualToString:@"Expiration Date"]) {
-                auto parts = Split(itemField.value, @"/", 2);
-                item.Set(Fields::Card::ExpMonth, parts[0]);
-                item.Set(Fields::Card::ExpYear, parts[1]);
+                std::vector<SecureString> parts = Split(itemField.value, @"/", 2);
+                static_cast<CardItem&>(item).setExpMonth(parts[0]).setExpYear(parts[1]);
             } else if (type == CipherType::Identity && [title isEqualToString:@"Name"]) {
-                item.Set(Fields::Identity::Title, View(itemField.value));
-                item.Set(Fields::Identity::FirstName, View(itemField.value_1));
-                item.Set(Fields::Identity::MiddleName, View(itemField.value_2));
-                item.Set(Fields::Identity::LastName, View(itemField.value_3));
+                static_cast<IdentityItem&>(item)
+                    .setTitle(View(itemField.value))
+                    .setFirstName(View(itemField.value_1))
+                    .setMiddleName(View(itemField.value_2))
+                    .setLastName(View(itemField.value_3));
             } else if (type == CipherType::Identity && [title isEqualToString:@"Locality"]) {
-                auto parts = Split(itemField.value, @",", 4);
-                item.Set(Fields::Identity::PostalCode, parts[0]);
-                item.Set(Fields::Identity::City, parts[1]);
-                item.Set(Fields::Identity::State, parts[2]);
-                item.Set(Fields::Identity::Country, parts[3]);
+                std::vector<SecureString> parts = Split(itemField.value, @",", 4);
+                static_cast<IdentityItem&>(item)
+                    .setPostalCode(parts[0])
+                    .setCity(parts[1])
+                    .setState(parts[2])
+                    .setCountry(parts[3]);
             } else if (type == CipherType::DriversLicense && [title isEqualToString:@"Name"]) {
-                item.Set(Fields::DriversLicense::FirstName, View(itemField.value));
-                item.Set(Fields::DriversLicense::MiddleName, View(itemField.value_1));
-                item.Set(Fields::DriversLicense::LastName, View(itemField.value_2));
+                static_cast<DriversLicenseItem&>(item)
+                    .setFirstName(View(itemField.value))
+                    .setMiddleName(View(itemField.value_1))
+                    .setLastName(View(itemField.value_2));
             } else if (type == CipherType::Passport && [title isEqualToString:@"Name"]) {
-                item.Set(Fields::Passport::GivenName, View(itemField.value));
-                item.Set(Fields::Passport::Surname, View(itemField.value_1));
+                static_cast<PassportItem&>(item)
+                    .setGivenName(View(itemField.value))
+                    .setSurname(View(itemField.value_1));
             }
+        }
+    }
+
+    /*
+     * Files an item under the folder UUID, or under no folder for the nil UUID.
+    */
+    void FileUnder(GenericItem& item, NSUUID* folderUUID) {
+        SecureString folder = ItemId(folderUUID);
+        if (folder == NoFolder) {
+            item.removeFolder();
+        } else {
+            item.setFolder(folder);
         }
     }
 }
@@ -373,11 +448,9 @@ namespace {
 + (void)cb_favorite {
     SidePanel.instance.cb_favorite = ^BOOL(BOOL fav, NSUUID* uuid) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<Vault> v_inst = ActiveVault();
 
-            Item item = Load(v_inst, uuid);
-            item.SetFavorite((bool)fav);
-            v_inst.Save(item);
+            Load(v_inst, uuid)->setFavorite((bool)fav).commit();
 
             return YES;
         } catch (...) {
@@ -394,12 +467,13 @@ namespace {
 + (void)cb_duplicate {
     SidePanel.instance.cb_duplicate = ^ItemElement* _Nullable(NSUUID* uuid, ItemType i_type) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<Vault> v_inst = ActiveVault();
 
-            Item copy = v_inst.Duplicate(Load(v_inst, uuid));
+            SecureString copyId = Load(v_inst, uuid)->duplicate();
+            std::shared_ptr<GenericItem> copy = LoadId(v_inst, copyId);
 
-            NSUUID* dupUUID = [[NSUUID alloc] initWithUUIDString:NS(copy.Id())];
-            return [[ItemElement alloc] initWithName:NS(copy.Name()) uuid:dupUUID type:i_type image:IconFor(v_inst, copy)];
+            NSUUID* dupUUID = [[NSUUID alloc] initWithUUIDString:NS(copyId)];
+            return [[ItemElement alloc] initWithName:NS(copy->getName()) uuid:dupUUID type:i_type image:IconFor(v_inst, *copy)];
         } catch (...) {
             ShowToast(@"Failed to Duplicate Item");
             return nil;
@@ -413,9 +487,9 @@ namespace {
 + (void)cb_delete {
     SidePanel.instance.cb_delete = ^BOOL(NSUUID* uuid) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
-            Item item = Load(v_inst, uuid);
-            v_inst.MoveToBin(item);
+            std::shared_ptr<Vault> v_inst = ActiveVault();
+            std::shared_ptr<GenericItem> item = Load(v_inst, uuid);
+            item->bin();
             return YES;
         } catch (...) {
             ShowToast(@"Failed to Delete Item");
@@ -430,9 +504,9 @@ namespace {
 + (void)cb_restore {
     SidePanel.instance.cb_restore = ^BOOL(NSUUID* uuid) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
-            Item item = Load(v_inst, uuid);
-            v_inst.Restore(item);
+            std::shared_ptr<Vault> v_inst = ActiveVault();
+            std::shared_ptr<GenericItem> item = Load(v_inst, uuid);
+            item->restore();
             return YES;
         } catch (...) {
             ShowToast(@"Failed to Restore Item");
@@ -447,9 +521,9 @@ namespace {
 + (void)cb_archive {
     SidePanel.instance.cb_archive = ^BOOL(NSUUID* uuid) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
-            Item item = Load(v_inst, uuid);
-            v_inst.Archive(item);
+            std::shared_ptr<Vault> v_inst = ActiveVault();
+            std::shared_ptr<GenericItem> item = Load(v_inst, uuid);
+            item->archive();
             return YES;
         } catch (...) {
             ShowToast(@"Failed to Archive Item");
@@ -464,9 +538,9 @@ namespace {
 + (void)cb_unarchive {
     SidePanel.instance.cb_unarchive = ^BOOL(NSUUID* uuid) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
-            Item item = Load(v_inst, uuid);
-            v_inst.Unarchive(item);
+            std::shared_ptr<Vault> v_inst = ActiveVault();
+            std::shared_ptr<GenericItem> item = Load(v_inst, uuid);
+            item->unarchive();
             return YES;
         } catch (...) {
             ShowToast(@"Failed to UnArchive Item");
@@ -481,8 +555,8 @@ namespace {
 + (void)cb_permDel {
     SidePanel.instance.cb_permDel = ^BOOL(NSUUID* uuid) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
-            v_inst.Delete(Load(v_inst, uuid));
+            std::shared_ptr<Vault> v_inst = ActiveVault();
+            Load(v_inst, uuid)->remove();
             return YES;
         } catch (...) {
             ShowToast(@"Failed to Permanently Delete Item");
@@ -498,12 +572,11 @@ namespace {
 + (void)cb_moveToFolder {
     SidePanel.instance.cb_moveToFolder = ^BOOL(NSUUID* folderUUID, NSUUID* uuid) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<Vault> v_inst = ActiveVault();
 
-            Item item = Load(v_inst, uuid);
-            std::string folder = ItemId(folderUUID);
-            item.SetFolderId(folder == NoFolder ? std::nullopt : std::optional<std::string>(folder));
-            v_inst.Save(item);
+            std::shared_ptr<GenericItem> item = Load(v_inst, uuid);
+            FileUnder(*item, folderUUID);
+            item->commit();
 
             return YES;
         } catch (...) {
@@ -521,10 +594,10 @@ namespace {
 + (void)cb_deleteMultiple {
     SidePanel.instance.cb_deleteMultiple = ^BOOL(NSArray<NSUUID*>* _Nonnull uuids) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<Vault> v_inst = ActiveVault();
             for (NSUUID* uuid in uuids) {
-                Item item = Load(v_inst, uuid);
-                v_inst.MoveToBin(item);
+                std::shared_ptr<GenericItem> item = Load(v_inst, uuid);
+                item->bin();
             }
             return YES;
         } catch (...) {
@@ -541,10 +614,10 @@ namespace {
 + (void)cb_restoreMultiple {
     SidePanel.instance.cb_restoreMultiple = ^BOOL(NSArray<NSUUID*>* _Nonnull uuids) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<Vault> v_inst = ActiveVault();
             for (NSUUID* uuid in uuids) {
-                Item item = Load(v_inst, uuid);
-                v_inst.Restore(item);
+                std::shared_ptr<GenericItem> item = Load(v_inst, uuid);
+                item->restore();
             }
             return YES;
         } catch (...) {
@@ -561,9 +634,9 @@ namespace {
 + (void)cb_permDelMultiple {
     SidePanel.instance.cb_permDelMultiple = ^BOOL(NSArray<NSUUID*>* _Nonnull uuids) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<Vault> v_inst = ActiveVault();
             for (NSUUID* uuid in uuids) {
-                v_inst.Delete(Load(v_inst, uuid));
+                Load(v_inst, uuid)->remove();
             }
             return YES;
         } catch (...) {
@@ -580,10 +653,10 @@ namespace {
 + (void)cb_archiveMultiple {
     SidePanel.instance.cb_archiveMultiple = ^BOOL(NSArray<NSUUID*>* _Nonnull uuids) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<Vault> v_inst = ActiveVault();
             for (NSUUID* uuid in uuids) {
-                Item item = Load(v_inst, uuid);
-                v_inst.Archive(item);
+                std::shared_ptr<GenericItem> item = Load(v_inst, uuid);
+                item->archive();
             }
             return YES;
         } catch (...) {
@@ -600,10 +673,10 @@ namespace {
 + (void)cb_unarchiveMultiple {
     SidePanel.instance.cb_unarchiveMultiple = ^BOOL(NSArray<NSUUID*>* _Nonnull uuids) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<Vault> v_inst = ActiveVault();
             for (NSUUID* uuid in uuids) {
-                Item item = Load(v_inst, uuid);
-                v_inst.Unarchive(item);
+                std::shared_ptr<GenericItem> item = Load(v_inst, uuid);
+                item->unarchive();
             }
             return YES;
         } catch (...) {
@@ -619,9 +692,9 @@ namespace {
  */
 static bool sidebar(NSUUID* uuid) {
     try {
-        ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+        std::shared_ptr<Vault> v_inst = ActiveVault();
 
-        Item item = Load(v_inst, uuid);
+        std::shared_ptr<GenericItem> item = Load(v_inst, uuid);
 
         NSMutableArray<GenericItemData*>* itemFields = [NSMutableArray array];
         NSMutableArray<FieldItemData*>* customFields = [NSMutableArray array];
@@ -629,31 +702,33 @@ static bool sidebar(NSUUID* uuid) {
         NSMutableArray<PasswordHistoryItem*>* passwordHistory = [NSMutableArray array];
         NSMutableArray<AttachmentItemData*>* attachments = [NSMutableArray array];
 
-        Display(v_inst, item, itemFields, passwordHistory);
+        Display(v_inst, *item, itemFields, passwordHistory);
 
-        for (const auto& field : item.CustomFields()) {
-            [customFields addObject:[[FieldItemData alloc] initWithTitle:NS(field.name)
-                                                                   value:NS(field.value)
-                                                                    type:(FieldItemType)((int)field.type)]];
+        for (const GenericItem::CustomField& field : item->getFields()) {
+            [customFields addObject:[[FieldItemData alloc] initWithTitle:NS(field.m_name)
+                                                                   value:NS(field.m_value)
+                                                                    type:(FieldItemType)((int)field.m_type)]];
         }
 
-        for (const auto& attachment : item.Attachments()) {
-            [attachments addObject:[[AttachmentItemData alloc] initWithAttachID:NS(attachment.id) name:NS(attachment.fileName)]];
+        for (const GenericItem::Attachment& attachment : item->getAttachments()) {
+            [attachments addObject:[[AttachmentItemData alloc] initWithAttachID:NS(attachment.m_id) name:NS(attachment.m_file_name)]];
         }
 
-        auto when = [](std::time_t t) { return t ? NS(ClientWarden::LocalTimeString(t)) : @""; };
-        [itemHistory addObject:[NSString stringWithFormat:@"Creation: %@", when(item.Created())]];
-        [itemHistory addObject:[NSString stringWithFormat:@"Modification: %@", when(item.Revised())]];
-        if (item.Deleted() != 0) {
-            [itemHistory addObject:[NSString stringWithFormat:@"Deletion: %@", when(item.Deleted())]];
+        NSString* (^when)(std::time_t) = ^NSString*(std::time_t t) {
+            return t ? NS(clientwarden::timestamp::localString(t)) : @"";
+        };
+        [itemHistory addObject:[NSString stringWithFormat:@"Creation: %@", when(item->getCreationDate())]];
+        [itemHistory addObject:[NSString stringWithFormat:@"Modification: %@", when(item->getRevisionDate())]];
+        if (item->getDeletionDate() != 0) {
+            [itemHistory addObject:[NSString stringWithFormat:@"Deletion: %@", when(item->getDeletionDate())]];
         }
 
-        NSUUID* folderUUID = [[NSUUID alloc] initWithUUIDString:NS(item.FolderId().value_or(NoFolder))];
+        NSUUID* folderUUID = [[NSUUID alloc] initWithUUIDString:NS(item->getFolderId().value_or(NoFolder))];
 
-        [SidePanel.instance viewItemWithName:NS(item.Name()) uuid:uuid type:ToItemType(item.Type()) icon:IconFor(v_inst, item)
-                            repromptItem:item.Reprompt() folderUUID:folderUUID favorite:item.Favorite()
+        [SidePanel.instance viewItemWithName:NS(item->getName()) uuid:uuid type:ToItemType(item->getType()) icon:IconFor(v_inst, *item)
+                            repromptItem:item->getReprompt() folderUUID:folderUUID favorite:item->getFavorite()
                             itemFields:itemFields customFields:customFields itemHistory:itemHistory passwordHistory:passwordHistory
-                            attachmentItems:attachments notes:NS(item.Notes())];
+                            attachmentItems:attachments notes:NS(item->getNotes())];
 
         return true;
     } catch (...) {
@@ -665,9 +740,9 @@ static bool sidebar(NSUUID* uuid) {
 + (void)cb_sidebar {
     SidePanel.instance.cb_sidebar = ^BOOL(NSUUID* uuid) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<Vault> v_inst = ActiveVault();
 
-            if (Load(v_inst, uuid).Reprompt()) {
+            if (Load(v_inst, uuid)->getReprompt()) {
                 [SidePanel.instance closeItem];
                 SidePanel.instance.isReprompt = true;
                 SidePanel.instance.repromptFailed = false;
@@ -684,9 +759,9 @@ static bool sidebar(NSUUID* uuid) {
 
     SidePanel.instance.cb_sidebarReprompt = ^BOOL(NSUUID* uuid, NSString* password) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<Vault> v_inst = ActiveVault();
 
-            if (v_inst.VerifyMasterPassword(View(password))) {
+            if (v_inst->verifyMasterPassword(View(password))) {
                 SidePanel.instance.isReprompt = false;
                 SidePanel.instance.repromptFailed = false;
                 return (BOOL)sidebar(uuid);
@@ -710,16 +785,21 @@ static bool sidebar(NSUUID* uuid) {
 + (void)cb_downloadAttachment {
     SidePanel.instance.cb_downloadAttachment = ^BOOL(NSUUID* uuid, NSString* attachID) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<Vault> v_inst = ActiveVault();
 
-            std::string c_attachID = attachID.UTF8String;
-            auto attachment = Load(v_inst, uuid).FindAttachment(c_attachID);
+            SecureString c_attachID = attachID.UTF8String;
+            std::optional<GenericItem::Attachment> attachment;
+            for (GenericItem::Attachment& candidate : Load(v_inst, uuid)->getAttachments()) {
+                if (candidate.m_id == c_attachID) {
+                    attachment = candidate;
+                }
+            }
             if (!attachment) {
-                throw ClientWarden::VaultError("attachment not found");
+                throw clientwarden::VaultError("attachment not found");
             }
 
             NSSavePanel* panel = [NSSavePanel savePanel];
-            panel.nameFieldStringValue = NS(attachment->fileName);
+            panel.nameFieldStringValue = NS(attachment->m_file_name);
             panel.canCreateDirectories = YES;
 
             [panel beginWithCompletionHandler:^(NSModalResponse result) {
@@ -728,13 +808,12 @@ static bool sidebar(NSUUID* uuid) {
                     return;
                 }
 
-                std::string path = panel.URL.path.UTF8String;
+                std::filesystem::path path(panel.URL.path.UTF8String);
 
                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                     bool ok = false;
                     try {
-                        ClientWarden::Vault& vault = ClientWarden::Vault::Instance();
-                        ok = vault.DownloadAttachment(Load(vault, uuid), c_attachID, path, [attachID](float progress) {
+                        ok = Load(ActiveVault(), uuid)->downloadAttachment(c_attachID, path, [attachID](float progress) {
                             dispatch_async(dispatch_get_main_queue(), ^{
                                 [SidePanel.instance updateProgressWithId:attachID progress:(double)progress];
                             });
@@ -805,14 +884,13 @@ static bool sidebar(NSUUID* uuid) {
                     NSError* res = nil;
                     NSData* fileData = [NSData dataWithContentsOfFile:path options:0 error:&res];
 
-                    std::optional<std::string> newID;
+                    std::optional<SecureString> newID;
                     if (fileData) {
                         try {
-                            ClientWarden::Vault& vault = ClientWarden::Vault::Instance();
-                            Item item = Load(vault, uuid);
+                            std::shared_ptr<GenericItem> item = Load(ActiveVault(), uuid);
                             std::span<const uint8_t> content(static_cast<const uint8_t*>(fileData.bytes), fileData.length);
 
-                            newID = vault.AddAttachment(item, View(fileName), content, [tempAttachID](float progress) {
+                            newID = item->addAttachment(View(fileName), content, [tempAttachID](float progress) {
                                 dispatch_async(dispatch_get_main_queue(), ^{
                                     [SidePanel.instance updateProgressWithId:tempAttachID progress:(double)progress];
                                 });
@@ -855,11 +933,11 @@ static bool sidebar(NSUUID* uuid) {
 + (void)cb_removeAttachment {
     SidePanel.instance.cb_removeAttachment = ^BOOL(NSUUID* uuid, NSString* attachID) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<Vault> v_inst = ActiveVault();
 
-            Item item = Load(v_inst, uuid);
-            if (!v_inst.RemoveAttachment(item, attachID.UTF8String)) {
-                throw ClientWarden::VaultError("server refused to remove attachment");
+            std::shared_ptr<GenericItem> item = Load(v_inst, uuid);
+            if (!item->removeAttachment(View(attachID))) {
+                throw clientwarden::VaultError("server refused to remove attachment");
             }
 
             [SidePanel.instance deleteAttachmentViewWithId:attachID];
@@ -885,28 +963,25 @@ static bool sidebar(NSUUID* uuid) {
     SidePanel.instance.cb_save = ^BOOL(NSUUID* uuid, NSString* name, ItemType type, BOOL reprompt, NSUUID* folderUUID,
                                        NSArray<GenericItemData*>* itemFields, NSArray<FieldItemData*>* customFields, NSString* notes) {
         try {
-            ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+            std::shared_ptr<Vault> v_inst = ActiveVault();
 
-            Item item = Load(v_inst, uuid);
+            std::shared_ptr<GenericItem> item = Load(v_inst, uuid);
 
-            item.ClearCustomFields();
+            item->clearFields();
             for (FieldItemData* field in customFields) {
-                item.AddCustomField((ClientWarden::CustomFieldType)((int)field.type), View(field.title), View(field.value));
+                item->addField((clientwarden::CustomFieldType)((int)field.type), View(field.title), View(field.value));
             }
 
-            std::string folder = ItemId(folderUUID);
-            item.SetFolderId(folder == NoFolder ? std::nullopt : std::optional<std::string>(folder));
-            item.SetNotes(View(notes));
-            item.SetName(View(name));
-            item.SetReprompt((bool)reprompt);
+            FileUnder(*item, folderUUID);
+            item->setNotes(View(notes)).setName(View(name)).setReprompt((bool)reprompt);
 
-            Apply(item, itemFields);
+            Apply(*item, itemFields);
 
             /*
              * Offline saves are kept locally and uploaded on the next
              * sync, so only an exception counts as failure here.
             */
-            v_inst.Save(item);
+            item->commit();
 
             return YES;
         } catch (...) {
@@ -926,7 +1001,8 @@ static bool sidebar(NSUUID* uuid) {
 + (void)cb_genRandPasswd {
     SidePanel.instance.cb_genRandPasswd = ^NSString* (BOOL numbers, BOOL symbols, BOOL caps, NSInteger size) {
         try {
-            return NS(ClientWarden::PasswordGenerator::Random({ (int)size, (bool)caps, (bool)numbers, (bool)symbols }));
+            return NS(ActiveVault()->getGenerator()->password(
+                clientwarden::PasswordOptions { (int)size, (bool)caps, (bool)numbers, (bool)symbols }));
         } catch (...) {
             ShowToast(@"Failed to Generate Random Password");
             return @"";
@@ -944,7 +1020,7 @@ static bool sidebar(NSUUID* uuid) {
     SidePanel.instance.cb_genSimplPasswd = ^NSString* (BOOL caps, NSInteger size) {
         try {
             int words = (int)std::clamp<NSInteger>(size, 3, 20);
-            return NS(ClientWarden::Vault::Instance().Generator().Passphrase(words, (bool)caps));
+            return NS(ActiveVault()->getGenerator()->passphrase(words, (bool)caps, '-'));
         } catch (...) {
             ShowToast(@"Failed to Generate Simple Password");
             return @"";
@@ -961,7 +1037,7 @@ static bool sidebar(NSUUID* uuid) {
 + (void)cb_genPinPasswd {
     SidePanel.instance.cb_genPinPasswd = ^NSString* (NSInteger size) {
         try {
-            return NS(ClientWarden::PasswordGenerator::Pin((int)std::clamp<NSInteger>(size, 4, 64)));
+            return NS(ActiveVault()->getGenerator()->pin((int)std::clamp<NSInteger>(size, 4, 64)));
         } catch (...) {
             ShowToast(@"Failed to Generate Pin");
             return @"";

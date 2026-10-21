@@ -1,7 +1,7 @@
 #include <jni.h>
 #include <string>
 #include <vector>
-#include "Vault.h"
+#include "vault_manager/vault_manager.h"
 
 namespace {
     jobject getLucideIcon(JNIEnv* env, const char* iconName) {
@@ -21,7 +21,7 @@ namespace {
         return icon;
     }
 
-    jobject makeUuid(JNIEnv* env, const std::string& uuid) {
+    jobject makeUuid(JNIEnv* env, const clientwarden::SecureString& uuid) {
         jclass uuidClass = env->FindClass("java/util/UUID");
         jmethodID fromString = env->GetStaticMethodID(uuidClass, "fromString", "(Ljava/lang/String;)Ljava/util/UUID;");
 
@@ -69,18 +69,18 @@ namespace {
      * Kotlin's ItemType only knows the original five types; newer ones are
      * shown as logins until the UI grows them.
     */
-    std::pair<const char*, const char*> typeAndIcon(ClientWarden::CipherType type) {
+    std::pair<const char*, const char*> typeAndIcon(clientwarden::CipherType type) {
         switch (type) {
-            case ClientWarden::CipherType::Card: return { "Card", "CreditCard" };
-            case ClientWarden::CipherType::Identity: return { "Identity", "IdCard" };
-            case ClientWarden::CipherType::Note: return { "Note", "StickyNote" };
-            case ClientWarden::CipherType::SSHKey: return { "SSHKey", "KeyRound" };
-            case ClientWarden::CipherType::Login: return { "Login", "Globe" };
+            case clientwarden::CipherType::Card: return { "Card", "CreditCard" };
+            case clientwarden::CipherType::Identity: return { "Identity", "IdCard" };
+            case clientwarden::CipherType::Note: return { "Note", "StickyNote" };
+            case clientwarden::CipherType::SshKey: return { "SSHKey", "KeyRound" };
+            case clientwarden::CipherType::Login: return { "Login", "Globe" };
             default: return { "Login", "SquareDashed" };
         }
     }
 
-    jobject getItems(JNIEnv* env, const std::vector<ClientWarden::ItemSummary>& ciphers) {
+    jobject getItems(JNIEnv* env, const std::vector<clientwarden::ItemSummary>& ciphers) {
         jclass itemClass = env->FindClass("com/ct5/clientwarden/ItemElement");
         if (itemClass == nullptr) {
             env->ExceptionClear();
@@ -90,12 +90,15 @@ namespace {
         jmethodID constructor = env->GetMethodID(itemClass, "<init>",
             "(Ljava/util/UUID;Ljava/lang/String;Lcom/ct5/clientwarden/ItemType;Landroidx/compose/ui/graphics/vector/ImageVector;)V");
 
-        ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
+        std::shared_ptr<clientwarden::Orchestrator> orchestrator =
+            clientwarden::VaultManager::instance().getActiveVault()->getOrchestrator();
         std::vector<jobject> items;
 
         for (const auto& cipher : ciphers) {
-            std::optional<ClientWarden::Item> item = v_inst.GetItem(cipher.id);
-            if (!item) {
+            clientwarden::SecureString itemName;
+            try {
+                itemName = orchestrator->getGenericItem(cipher.m_id)->getName();
+            } catch (const clientwarden::VaultError&) {
                 continue;
             }
 
@@ -103,10 +106,10 @@ namespace {
              * ItemElement.icon is an ImageVector, so downloaded favicons
              * can't be shown yet; every item gets its type's Lucide icon.
             */
-            auto [typeName, iconName] = typeAndIcon(cipher.type);
+            auto [typeName, iconName] = typeAndIcon(cipher.m_type);
 
-            jobject uuid = makeUuid(env, cipher.id);
-            jstring name = env->NewStringUTF(item->Name().c_str());
+            jobject uuid = makeUuid(env, cipher.m_id);
+            jstring name = env->NewStringUTF(itemName.c_str());
             jobject type = getItemType(env, typeName);
             jobject icon = getLucideIcon(env, iconName);
 
@@ -126,8 +129,8 @@ namespace {
 extern "C" JNIEXPORT jobject JNICALL
 Java_com_ct5_clientwarden_UIBridge_cb_1allItems(JNIEnv* env, jobject _this) {
     try {
-        ClientWarden::Vault& v_inst = ClientWarden::Vault::Instance();
-        return getItems(env, v_inst.Query().NotInBin().NotArchived().Run());
+        std::shared_ptr<clientwarden::Vault> vault = clientwarden::VaultManager::instance().getActiveVault();
+        return getItems(env, vault->getOrchestrator()->query().notInBin().notArchived().run());
     } catch (...) {
         /*
          * TODO: Add TOAST
