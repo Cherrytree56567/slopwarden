@@ -1,7 +1,9 @@
 #include "Clipboard.h"
 
+#include <thread>
+
 namespace ClientWarden {
-    void Clipboard::Copy(std::string& str) {
+    void Clipboard::Copy(std::string_view str, std::chrono::seconds clearAfter) {
         winrt::Windows::ApplicationModel::DataTransfer::DataPackage dataPackage;
 
         winrt::hstring hstr = winrt::to_hstring(str);
@@ -15,10 +17,9 @@ namespace ClientWarden {
         winrt::Windows::ApplicationModel::DataTransfer::Clipboard::SetContentWithOptions(dataPackage, options);
 
         DWORD targetedSequenceNumber = ::GetClipboardSequenceNumber();
-        int delay = GetDelay();
 
-        std::thread([delay, targetedSequenceNumber]() {
-            std::this_thread::sleep_for(std::chrono::seconds(delay));
+        std::thread([clearAfter, targetedSequenceNumber]() {
+            std::this_thread::sleep_for(clearAfter);
             if (GetClipboardSequenceNumber() == targetedSequenceNumber) {
                 winrt::Windows::ApplicationModel::DataTransfer::DataPackage emptyPackage;
                 emptyPackage.SetText(L"");
@@ -32,29 +33,21 @@ namespace ClientWarden {
         }).detach();
 
         if (!hstr.empty()) {
-            void* hstrPtr = const_cast<wchar_t*>(hstr.data());
-            size_t hstrBytes = hstr.size() * sizeof(wchar_t);
-            OPENSSL_cleanse(hstrPtr, hstrBytes);
-        }
-        if (!str.empty()) {
-            void* strPtr = const_cast<char*>(str.data());
-            OPENSSL_cleanse(strPtr, str.size());
+            SecureZeroMemory(const_cast<wchar_t*>(hstr.data()), hstr.size() * sizeof(wchar_t));
         }
     }
 
-    void Clipboard::Paste(std::string& str) {
+    std::string Clipboard::Paste() {
+        std::string str;
         winrt::Windows::ApplicationModel::DataTransfer::DataPackageView content = winrt::Windows::ApplicationModel::DataTransfer::Clipboard::GetContent();
 
         if (content.Contains(winrt::Windows::ApplicationModel::DataTransfer::StandardDataFormats::Text())) {
             winrt::hstring hstr = content.GetTextAsync().get();
             str = winrt::to_string(hstr);
             if (!hstr.empty()) {
-                void* hstrPtr = const_cast<wchar_t*>(hstr.data());
-                size_t hstrBytes = hstr.size() * sizeof(wchar_t);
-                OPENSSL_cleanse(hstrPtr, hstrBytes);
+                SecureZeroMemory(const_cast<wchar_t*>(hstr.data()), hstr.size() * sizeof(wchar_t));
             }
-        } else {
-            str = "";
         }
+        return str;
     }
 }

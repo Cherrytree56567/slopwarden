@@ -1,45 +1,35 @@
 #include "Clipboard.h"
-
 #import <Cocoa/Cocoa.h>
+#include <thread>
 
 namespace ClientWarden {
-    void Clipboard::Copy(std::string& str) {
+    void Clipboard::Copy(std::string_view text, std::chrono::seconds clearAfter) {
         NSPasteboard* pasteboard = [NSPasteboard generalPasteboard];
         [pasteboard clearContents];
- 
-        NSString* nsStr = [NSString stringWithUTF8String:str.c_str()];
 
+        NSString* nsStr = [[NSString alloc] initWithBytes:text.data() length:text.size() encoding:NSUTF8StringEncoding];
+
+        /*
+         * ConcealedType asks clipboard managers not to record the value.
+        */
         NSArray* types = @[NSPasteboardTypeString, @"org.nspasteboard.ConcealedType"];
         [pasteboard declareTypes:types owner:nil];
         [pasteboard setString:nsStr forType:NSPasteboardTypeString];
         [pasteboard setString:@"" forType:@"org.nspasteboard.ConcealedType"];
 
         NSInteger targetedChangeCount = [pasteboard changeCount];
-        int delay = GetDelay();
 
-        std::thread([delay, targetedChangeCount]() {
-            std::this_thread::sleep_for(std::chrono::seconds(delay));
-
+        std::thread([clearAfter, targetedChangeCount]() {
+            std::this_thread::sleep_for(clearAfter);
             NSPasteboard* pb = [NSPasteboard generalPasteboard];
             if ([pb changeCount] == targetedChangeCount) {
                 [pb clearContents];
             }
         }).detach();
-
-        if (!str.empty()) {
-            void* strPtr = const_cast<char*>(str.data());
-            OPENSSL_cleanse(strPtr, str.size());
-        }
     }
 
-    void Clipboard::Paste(std::string& str) {
-        NSPasteboard* pasteboard = [NSPasteboard generalPasteboard];
-        NSString* nsStr = [pasteboard stringForType:NSPasteboardTypeString];
-    
-        if (nsStr != nil) {
-            str = std::string([nsStr UTF8String]);
-        } else {
-            str = "";
-        }
+    std::string Clipboard::Paste() {
+        NSString* nsStr = [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeString];
+        return nsStr != nil ? std::string([nsStr UTF8String]) : std::string();
     }
 }
