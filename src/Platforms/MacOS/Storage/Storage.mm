@@ -156,3 +156,16 @@ bool Storage::exists(std::filesystem::path file) {
     std::filesystem::path nFile = file.is_absolute() ? file : (path / file);
     return std::filesystem::exists(nFile);
 }
+#include "platform/paths/paths.h"
+
+/*
+ * Vault core hooks: the data directory is Application Support/ClientWarden and resources come
+ * from the app bundle, exactly where Storage already looks.
+*/
+std::filesystem::path clientwarden::paths::dataDirectory() {
+    return Storage().path;
+}
+
+std::filesystem::path clientwarden::paths::resourceDirectory() {
+    return Storage("").path;
+}

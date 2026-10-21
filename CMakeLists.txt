@@ -67,44 +67,25 @@ if (WIN32)
     configure_targets(clientwarden)
 endif()
 
-set(FILES
-    src/Vault/Auth/Session.cpp
-    src/Vault/Crypto/Crypto.cpp
-    src/Vault/Crypto/PasswordGenerator.cpp
-    src/Vault/Model/CipherSchema.cpp
-    src/Vault/Model/Item.cpp
-    src/Vault/Model/ItemQuery.cpp
-    src/Vault/Net/BitwardenApi.cpp
-    src/Vault/Net/Http.cpp
-    src/Vault/Net/HttplibTransport.cpp
-    src/Vault/Net/Notifications.cpp
-    src/Vault/Platform/FileStore.cpp
-    src/Vault/Platform/SecretStore.cpp
-    src/Vault/Settings/Settings.cpp
-    src/Vault/Store/VaultStore.cpp
-    src/Vault/Sync/SyncEngine.cpp
-    src/Vault/Util/Util.cpp
-    src/Vault/Vault.cpp
-    src/Vault/VaultInstance.cpp
-)
+# The platform-independent vault core (src/core); see Wiki/Architecturev2.md.
+add_subdirectory(src/core)
 
 if (WIN32)
-    add_executable(clientwarden WIN32 ${FILES})
+    add_executable(clientwarden WIN32)
 elseif (ANDROID)
-    add_library(clientwarden SHARED ${FILES})
+    add_library(clientwarden SHARED)
 elseif (LINUX)
-    add_library(clientwarden SHARED ${FILES})
+    add_library(clientwarden SHARED)
 elseif (APPLE)
-    add_executable(clientwarden MACOSX_BUNDLE ${FILES})
-    #add_library(clientwarden SHARED ${FILES}) # Remove comment to use Linux Build on MacOS
+    add_executable(clientwarden MACOSX_BUNDLE)
+    #add_library(clientwarden SHARED) # Remove comment to use Linux Build on MacOS
 else()
-    add_library(clientwarden SHARED ${FILES})
+    add_library(clientwarden SHARED)
 endif()
 
-target_link_libraries(clientwarden PRIVATE OpenSSL::Crypto OpenSSL::SSL spdlog::spdlog Boost::boost Boost::url httplib::httplib nlohmann_json::nlohmann_json botan::botan msgpack-cxx keychain)
-target_compile_definitions(clientwarden PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT MSGPACK_DISABLE_LEGACY_NIL)
+target_link_libraries(clientwarden PRIVATE clientwarden_core_runtime)
 
-target_include_directories(clientwarden PRIVATE src/Vault src/Platforms/)
+target_include_directories(clientwarden PRIVATE src/Platforms/)
 
 if (ANDROID)
     target_compile_options(clientwarden PRIVATE -fexperimental-library)
