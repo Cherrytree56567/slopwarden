@@ -68,3 +68,14 @@ TEST_CASE("Schema wire format strips local-only markers") {
     json["createdOffline"] = true;
     REQUIRE_FALSE(Schema::wireFormat(json, false).contains("createdOffline"));
 }
+
+TEST_CASE("Fields are found by key and secrets are flagged") {
+    REQUIRE(Schema::fieldFor(CipherType::Card, "number") == fields::card::c_number);
+    REQUIRE_FALSE(Schema::fieldFor(CipherType::Card, "username"));
+    REQUIRE_FALSE(Schema::fieldFor(CipherType::Generic, "number"));
+
+    REQUIRE(Schema::isSecret(fields::login::c_password));
+    REQUIRE(Schema::isSecret(fields::card::c_code));
+    REQUIRE_FALSE(Schema::isSecret(fields::login::c_username));
+    REQUIRE_FALSE(Schema::isSecret(fields::card::c_brand));
+}

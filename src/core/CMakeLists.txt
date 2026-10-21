@@ -10,7 +10,14 @@ set(CLIENTWARDEN_CORE_RUNTIME_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/platform/http/httplib_transport.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vault_manager/vault_manager_instance.cpp
 )
-list(REMOVE_ITEM CLIENTWARDEN_CORE_SOURCES ${CLIENTWARDEN_CORE_RUNTIME_SOURCES})
+set(CLIENTWARDEN_KEYCHAIN_FACTORY ${CMAKE_CURRENT_SOURCE_DIR}/platform/secret_store/keychain_factory.cpp)
+list(REMOVE_ITEM CLIENTWARDEN_CORE_SOURCES ${CLIENTWARDEN_CORE_RUNTIME_SOURCES} ${CLIENTWARDEN_KEYCHAIN_FACTORY})
+
+# Platforms without an OS keychain the keychain library supports define
+# createPlatformSecretStore() themselves.
+if (NOT ANDROID AND NOT CLIENTWARDEN_WII)
+    list(APPEND CLIENTWARDEN_CORE_RUNTIME_SOURCES ${CLIENTWARDEN_KEYCHAIN_FACTORY})
+endif()
 
 add_library(clientwarden_core STATIC ${CLIENTWARDEN_CORE_SOURCES})
 target_compile_features(clientwarden_core PUBLIC cxx_std_20)

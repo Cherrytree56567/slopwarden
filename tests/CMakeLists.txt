@@ -33,11 +33,14 @@ find_package(msgpack-cxx CONFIG REQUIRED)
 add_subdirectory(../src/core core)
 
 # One test file per core class, mirroring src/core (tests/core/vault/crypto/crypto.cpp, ...).
-file(GLOB_RECURSE CORE_TESTS CONFIGURE_DEPENDS core/*.cpp support/*.cpp)
+file(GLOB_RECURSE CORE_TESTS CONFIGURE_DEPENDS core/*.cpp support/*.cpp bridge/*.cpp)
 
-add_executable(core_tests main.cpp ${CORE_TESTS})
+# The shared JSON bridge the non-Swift UIs use (platform code, tested with the core).
+set(SHARED_BRIDGE ../src/Platforms/Shared/JsonBridge/JsonBridge.cpp)
+
+add_executable(core_tests main.cpp ${CORE_TESTS} ${SHARED_BRIDGE})
 target_link_libraries(core_tests PRIVATE Catch2::Catch2WithMain clientwarden_core)
-target_include_directories(core_tests PRIVATE .)
+target_include_directories(core_tests PRIVATE . ../src/Platforms/Shared)
 
 if (APPLE)
     add_custom_command(TARGET core_tests POST_BUILD

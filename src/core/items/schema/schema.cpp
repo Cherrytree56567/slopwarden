@@ -1,5 +1,7 @@
 #include "schema.h"
 
+#include <algorithm>
+
 #include <array>
 
 namespace clientwarden {
@@ -178,5 +180,27 @@ namespace clientwarden {
         const Json& type = at(cipher, "type");
         return type.is_number_integer() ? static_cast<CipherType>(type.get<int>())
                                         : CipherType::Generic;
+    }
+
+    std::optional<FieldId> Schema::fieldFor(CipherType type, std::string_view key) {
+        std::optional<TypeSchema> schema = forType(type);
+        if (!schema) {
+            return std::nullopt;
+        }
+        for (FieldId field : schema->m_fields) {
+            if (field.m_key == key) {
+                return field;
+            }
+        }
+        return std::nullopt;
+    }
+
+    bool Schema::isSecret(FieldId field) {
+        constexpr std::array<FieldId, 12> c_secrets = { fields::login::c_password, fields::card::c_number,
+            fields::card::c_code, fields::identity::c_ssn, fields::identity::c_passport_number,
+            fields::ssh_key::c_private_key, fields::bank_account::c_account_number,
+            fields::bank_account::c_routing_number, fields::bank_account::c_pin, fields::bank_account::c_iban,
+            fields::drivers_license::c_license_number, fields::passport::c_passport_number };
+        return std::find(c_secrets.begin(), c_secrets.end(), field) != c_secrets.end();
     }
 }

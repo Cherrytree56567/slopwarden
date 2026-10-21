@@ -180,6 +180,24 @@ namespace clientwarden {
         static std::span<const TypeSchema> all();
 
         /**
+         * @brief Finds a type's field by its JSON key.
+         *
+         * @param type The cipher type
+         * @param key The JSON key
+         * @return The field, or nullopt if the type has no such field
+         */
+        static std::optional<FieldId> fieldFor(CipherType type, std::string_view key);
+
+        /**
+         * @brief Whether a field holds a secret the UI should conceal by default (passwords,
+         * card numbers and codes, SSNs, account numbers, PINs, private keys, ...).
+         *
+         * @param field The field
+         * @return True to conceal
+         */
+        static bool isSecret(FieldId field);
+
+        /**
          * @brief The PascalCase key used inside the pre-2026.6.0 "data" blob.
          *
          * @param key The JSON key (e.g. "ssn")

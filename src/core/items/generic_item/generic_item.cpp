@@ -579,4 +579,21 @@ namespace clientwarden {
         }
         return shared;
     }
+
+    SecureString GenericItem::getFieldValue(std::string_view key) const {
+        std::optional<FieldId> field = Schema::fieldFor(getType(), key);
+        if (!field) {
+            throw VaultError("no such field for this item type");
+        }
+        return getField_(*field);
+    }
+
+    GenericItem& GenericItem::setFieldValue(std::string_view key, std::string_view value) {
+        std::optional<FieldId> field = Schema::fieldFor(getType(), key);
+        if (!field) {
+            throw VaultError("no such field for this item type");
+        }
+        setField_(*field, value);
+        return *this;
+    }
 }

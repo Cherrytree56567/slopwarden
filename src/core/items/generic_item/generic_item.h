@@ -195,6 +195,25 @@ namespace clientwarden {
         std::vector<Attachment> getAttachments() const;
 
         /**
+         * @brief Reads a type-specific field by its JSON key (for data-driven UIs).
+         *
+         * @param key e.g. "number" for a card
+         * @return The decrypted value
+         * @throws VaultError if the key isn't a field of this item's type
+         */
+        SecureString getFieldValue(std::string_view key) const;
+
+        /**
+         * @brief Sets a type-specific field by its JSON key (for data-driven UIs).
+         *
+         * @param key e.g. "number" for a card
+         * @param value The plaintext
+         * @return This item, for chaining
+         * @throws VaultError if the key isn't a field of this item's type
+         */
+        GenericItem& setFieldValue(std::string_view key, std::string_view value);
+
+        /**
          * @brief Sets the name.
          *
          * @param name The new name

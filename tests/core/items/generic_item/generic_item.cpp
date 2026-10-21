@@ -189,3 +189,17 @@ TEST_CASE("GenericItem duplicates every type") {
     REQUIRE(copy->getJson()["revisionDate"].is_null());
     REQUIRE(copy->getJson()["attachments"].is_null());
 }
+
+TEST_CASE("Fields can be read and written by key") {
+    std::shared_ptr<Crypto> crypto = std::make_shared<Crypto>();
+    SymmetricKey user_key = SymmetricKey::generate();
+    SymmetricKey item_key;
+    Json json = GenericItem::createJson(CipherType::Card, crypto, user_key, item_key);
+    GenericItem card(nullptr, crypto, json, item_key);
+
+    card.setFieldValue("number", "4111111111111111").setFieldValue("code", "123");
+    REQUIRE(card.getFieldValue("number") == "4111111111111111");
+    REQUIRE(card.getFieldValue("code") == "123");
+    REQUIRE_THROWS_AS(card.getFieldValue("password"), VaultError);
+    REQUIRE_THROWS_AS(card.setFieldValue("../name", "x"), VaultError);
+}
