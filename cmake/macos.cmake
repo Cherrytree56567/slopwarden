@@ -42,6 +42,7 @@ function(buildUI _target)
         src/Platforms/MacOS/UI/Clientwarden/NavigationPanel.swift
         src/Platforms/MacOS/UI/Clientwarden/PreviewData.swift
         src/Platforms/MacOS/UI/Clientwarden/SidePanel.swift
+        src/Platforms/MacOS/UI/Clientwarden/SendPanel.swift
         src/Platforms/MacOS/UI/Clientwarden/Unlock.swift
         src/Platforms/MacOS/UI/Clientwarden/Login.swift
         src/Platforms/MacOS/UI/Clientwarden/SettingsView.swift
@@ -72,6 +73,7 @@ function(buildUI _target)
         src/Platforms/MacOS/UIBridge/ItemsPanelBridge.mm
         src/Platforms/MacOS/UIBridge/UIFeaturesBridge.mm
         src/Platforms/MacOS/UIBridge/SidePanelBridge.mm
+        src/Platforms/MacOS/UIBridge/SendBridge.mm
         src/Platforms/MacOS/UIBridge/SettingsBridge.mm
         src/Platforms/MacOS/UIBridge/ActivityMonitorBridge.mm
         src/Platforms/MacOS/UIBridge/SDKHandlerBridge.mm

@@ -16,6 +16,7 @@ enum NavItems: Hashable {
     case folder(UUID)
     case organization(UUID)
     case collection(UUID)
+    case sends
 }
 
 @objcMembers
@@ -153,6 +154,9 @@ final class NavigationPanel: NSObject {
                 elements = cb_organization?(uuid)
             case .collection(let uuid):
                 elements = cb_collection?(uuid)
+            case .sends:
+                SendPanel.instance.reload()
+                return true
         }
         
         if let elements {
@@ -299,6 +303,9 @@ struct NavigationPanelView: View {
                         ToastStore.instance.toasts.append(Toast(message: "No callback set for archive Items"))
                     }
                 }
+
+            Label("Send", systemImage: "paperplane")
+                .tag(NavItems.sends)
 
             Section("Type") {
                 Label("Login", systemImage: "globe")

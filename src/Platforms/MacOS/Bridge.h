@@ -6,6 +6,7 @@
 #import "UIBridge/ItemsPanelBridge.h"
 #import "UIBridge/UIFeaturesBridge.h"
 #import "UIBridge/SidePanelBridge.h"
+#import "UIBridge/SendBridge.h"
 #import "UIBridge/SettingsBridge.h"
 #import "UIBridge/ActivityMonitorBridge.h"
 #import "UIBridge/SDKHandlerBridge.h"

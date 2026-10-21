@@ -216,10 +216,18 @@ struct ClientwardenApp: App {
                             NavigationSplitView {
                                 NavigationPanelView()
                             } content: {
-                                ItemsPanelView()
-                                    .id(NavigationPanel.instance.refresh)
+                                if (NavigationPanel.instance.selection == .sends) {
+                                    SendListView()
+                                } else {
+                                    ItemsPanelView()
+                                        .id(NavigationPanel.instance.refresh)
+                                }
                             } detail: {
-                                SidePanelView()
+                                if (NavigationPanel.instance.selection == .sends) {
+                                    SendDetailView()
+                                } else {
+                                    SidePanelView()
+                                }
                             }
                         }
                         .frame(minWidth: 700, maxWidth: 700, minHeight: 400, maxHeight: 400)
