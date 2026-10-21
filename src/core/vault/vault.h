@@ -17,6 +17,7 @@
 #include "vault/network/network.h"
 #include "vault/orchestrator/orchestrator.h"
 #include "vault/organizations/organizations.h"
+#include "vault/sends/sends.h"
 #include "vault/profile/profile.h"
 #include "vault/session/session.h"
 #include "vault/settings/settings.h"
@@ -191,6 +192,13 @@ namespace clientwarden {
         std::shared_ptr<Organizations> getOrganizations() const;
 
         /**
+         * @brief Bitwarden Send.
+         *
+         * @return The Sends part
+         */
+        std::shared_ptr<Sends> getSends() const;
+
+        /**
          * @brief Password generation.
          *
          * @return The Generator part
@@ -350,6 +358,7 @@ namespace clientwarden {
         std::shared_ptr<Orchestrator> m_orchestrator_;
         std::shared_ptr<Generator> m_generator_;
         std::shared_ptr<Organizations> m_organizations_;
+        std::shared_ptr<Sends> m_sends_;
 
     private:
         SecureString m_id_;

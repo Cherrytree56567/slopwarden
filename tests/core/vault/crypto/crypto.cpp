@@ -286,3 +286,21 @@ TEST_CASE("RSA decryption rejects other keys, types and garbage") {
     REQUIRE_THROWS_AS(crypto.rsaDecrypt(wrapped, SecureBytes { 1, 2, 3 }), CryptoError);
     REQUIRE_THROWS_AS(crypto.rsaEncrypt(encoding::bytesOf("x"), SecureBytes { 1, 2, 3 }), CryptoError);
 }
+
+TEST_CASE("HKDF matches RFC 5869 test case 1") {
+    Crypto crypto;
+    SecureBytes ikm(22, 0x0b);
+    std::string_view salt("\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c", 13);
+    std::string_view info("\xf0\xf1\xf2\xf3\xf4\xf5\xf6\xf7\xf8\xf9", 10);
+
+    REQUIRE(encoding::hexEncode(crypto.hkdf(ikm, salt, info, 42)) ==
+            "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865");
+    REQUIRE_THROWS_AS(crypto.hkdf(ikm, salt, info, 0), CryptoError);
+}
+
+TEST_CASE("PBKDF2 matches a known SHA-256 vector") {
+    Crypto crypto;
+    REQUIRE(encoding::hexEncode(crypto.pbkdf2("password", encoding::bytesOf("salt"), 1, 32)) ==
+            "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b");
+    REQUIRE_THROWS_AS(crypto.pbkdf2("password", encoding::bytesOf("salt"), 0, 32), CryptoError);
+}

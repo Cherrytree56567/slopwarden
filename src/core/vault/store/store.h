@@ -227,6 +227,30 @@ namespace clientwarden {
         void removeFolder(std::string_view id, bool queue_remote_delete);
 
         /**
+         * @brief Records in a top-level array of the sync response (e.g. "sends").
+         *
+         * @param section The array's key
+         * @return Its object entries
+         */
+        std::vector<Record> getSectionRecords(std::string_view section) const;
+
+        /**
+         * @brief Inserts or replaces a record (by id) in a top-level array, and persists.
+         *
+         * @param section The array's key
+         * @param record The record
+         */
+        void putSectionRecord(std::string_view section, Json record);
+
+        /**
+         * @brief Removes a record (by id) from a top-level array, and persists.
+         *
+         * @param section The array's key
+         * @param id The record id
+         */
+        void removeSectionRecord(std::string_view section, std::string_view id);
+
+        /**
          * @brief All collections from the last sync.
          *
          * @return The collection records
@@ -298,6 +322,7 @@ namespace clientwarden {
 
     private:
         void persist_();
+        void putSectionRecordLocked_(std::string_view section, Json record);
         static void commit_(
                 RecordSet& target, const std::vector<Record>& before, std::vector<Record> merged);
 

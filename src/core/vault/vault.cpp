@@ -58,6 +58,10 @@ namespace clientwarden {
         return m_organizations_;
     }
 
+    std::shared_ptr<Sends> Vault::getSends() const {
+        return m_sends_;
+    }
+
     std::shared_ptr<Generator> Vault::getGenerator() const {
         return m_generator_;
     }

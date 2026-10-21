@@ -376,4 +376,47 @@ namespace clientwarden {
             throw CryptoError("RSA decryption failed");
         }
     }
+
+    SecureBytes Crypto::hkdf(std::span<const uint8_t> input_key, std::string_view salt,
+            std::string_view info, size_t length) const {
+        if (length == 0 || length > 255 * 32) {
+            throw CryptoError("invalid HKDF output length");
+        }
+
+        /*
+         * RFC 5869: PRK = HMAC(salt, IKM); T(n) = HMAC(PRK, T(n-1) || info || n)
+         */
+        std::shared_ptr<Botan::MessageAuthenticationCode> mac =
+                Botan::MessageAuthenticationCode::create_or_throw("HMAC(SHA-256)");
+        mac->set_key(reinterpret_cast<const uint8_t*>(salt.data()), salt.size());
+        mac->update(input_key.data(), input_key.size());
+        SecureBytes prk = mac->final();
+
+        SecureBytes out;
+        SecureBytes block;
+        for (uint8_t counter = 1; out.size() < length; ++counter) {
+            mac->set_key(prk);
+            mac->update(block);
+            mac->update(reinterpret_cast<const uint8_t*>(info.data()), info.size());
+            mac->update(counter);
+            block = mac->final();
+            out.insert(out.end(), block.begin(), block.end());
+        }
+        out.resize(length);
+        return out;
+    }
+
+    SecureBytes Crypto::pbkdf2(std::string_view password, std::span<const uint8_t> salt,
+            uint32_t iterations, size_t length) const {
+        if (iterations == 0) {
+            throw CryptoError("PBKDF2 needs at least one iteration");
+        }
+        SecureBytes out(length);
+        std::shared_ptr<Botan::PasswordHash> hash =
+                Botan::PasswordHashFamily::create_or_throw("PBKDF2(SHA-256)")
+                        ->from_params(iterations);
+        hash->derive_key(
+                out.data(), out.size(), password.data(), password.size(), salt.data(), salt.size());
+        return out;
+    }
 }

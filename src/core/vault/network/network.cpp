@@ -543,4 +543,99 @@ namespace clientwarden {
                             "/collections/" + segment_(id);
         return call_(HttpMethod::Delete, Host::Vault, std::move(path), std::nullopt).ok();
     }
+
+    std::optional<Json> Network::createSend(const Json& send) {
+        return jsonOf_(call_(HttpMethod::Post, Host::Vault, "/api/sends", send), "CreateSend");
+    }
+
+    std::optional<Json> Network::createFileSend(const Json& send,
+            std::span<const uint8_t> encrypted_content, std::function<void(float)> on_progress) {
+        Json body = send;
+        body["fileLength"] = encrypted_content.size();
+        std::optional<Json> prepared =
+                jsonOf_(call_(HttpMethod::Post, Host::Vault, "/api/sends/file/v2", body),
+                        "PrepareFileSend");
+        const Json& response = prepared ? at(*prepared, "sendResponse") : at(body, "");
+        SecureString send_id = stringAt(response, "id");
+        SecureString file_id = stringAt(at(response, "file"), "id");
+        if (send_id.empty() || file_id.empty()) {
+            return std::nullopt;
+        }
+
+        HttpRequest upload;
+        upload.m_method = HttpMethod::Post;
+        upload.m_host = Host::Vault;
+        upload.m_path =
+                SecureString("/api/sends/") + segment_(send_id) + "/file/" + segment_(file_id);
+        upload.m_file = HttpFile { "data", stringAt(at(send, "file"), "fileName"),
+            SecureBytes(encrypted_content.begin(), encrypted_content.end()) };
+        upload.m_on_progress = std::move(on_progress);
+        upload.m_timeout_seconds = 600;
+        if (!send_(std::move(upload), true).ok()) {
+            Logger::get()->warn("UploadSendFile failed");
+            deleteSend(send_id); // don't leave a Send without its file behind
+            return std::nullopt;
+        }
+        return response;
+    }
+
+    std::optional<Json> Network::updateSend(std::string_view id, const Json& send) {
+        SecureString path = SecureString("/api/sends/") + segment_(id);
+        return jsonOf_(call_(HttpMethod::Put, Host::Vault, std::move(path), send), "UpdateSend");
+    }
+
+    std::optional<Json> Network::removeSendPassword(std::string_view id) {
+        SecureString path = SecureString("/api/sends/") + segment_(id) + "/remove-password";
+        return jsonOf_(call_(HttpMethod::Put, Host::Vault, std::move(path), std::nullopt),
+                "RemoveSendPassword");
+    }
+
+    bool Network::deleteSend(std::string_view id) {
+        SecureString path = SecureString("/api/sends/") + segment_(id);
+        return call_(HttpMethod::Delete, Host::Vault, std::move(path), std::nullopt).ok();
+    }
+
+    HttpResponse Network::accessSend(
+            std::string_view origin, std::string_view access_id, std::string_view password_hash) {
+        Json body = Json::object();
+        if (!password_hash.empty()) {
+            body["password"] = SecureString(password_hash);
+        }
+        HttpRequest request;
+        request.m_method = HttpMethod::Post;
+        request.m_path = SecureString(origin) + "/api/sends/access/" + segment_(access_id);
+        request.m_body = body.dump();
+        request.m_content_type = "application/json";
+        return send_(std::move(request), false);
+    }
+
+    std::optional<SecureBytes> Network::accessSendFile(std::string_view origin,
+            std::string_view send_id, std::string_view file_id, std::string_view password_hash,
+            std::function<void(float)> on_progress) {
+        Json body = Json::object();
+        if (!password_hash.empty()) {
+            body["password"] = SecureString(password_hash);
+        }
+        HttpRequest request;
+        request.m_method = HttpMethod::Post;
+        request.m_path = SecureString(origin) + "/api/sends/" + segment_(send_id) +
+                         "/access/file/" + segment_(file_id);
+        request.m_body = body.dump();
+        request.m_content_type = "application/json";
+        std::optional<Json> meta = jsonOf_(send_(std::move(request), false), "AccessSendFile");
+        SecureString url = meta ? stringAt(*meta, "url") : SecureString();
+        if (!url.starts_with("https://") && !url.starts_with("http://")) {
+            return std::nullopt;
+        }
+
+        HttpRequest download;
+        download.m_path = url;
+        download.m_on_progress = std::move(on_progress);
+        download.m_timeout_seconds = 600;
+        HttpResponse response = send_(std::move(download), false);
+        if (!response.ok()) {
+            return std::nullopt;
+        }
+        return response.m_body;
+    }
 }

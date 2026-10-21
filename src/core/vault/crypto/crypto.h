@@ -266,6 +266,30 @@ namespace clientwarden {
                 std::string_view enc_string, std::span<const uint8_t> private_key) const;
 
         /**
+         * @brief HKDF-SHA256 (extract and expand), as used to derive Send keys.
+         *
+         * @param input_key The input key material
+         * @param salt The extract salt
+         * @param info The expand context
+         * @param length Bytes of output (at most 8160)
+         * @return The derived key material
+         */
+        SecureBytes hkdf(std::span<const uint8_t> input_key, std::string_view salt,
+                std::string_view info, size_t length) const;
+
+        /**
+         * @brief PBKDF2-HMAC-SHA256.
+         *
+         * @param password The password
+         * @param salt The salt
+         * @param iterations Iteration count (at least 1)
+         * @param length Bytes of output
+         * @return The derived key
+         */
+        SecureBytes pbkdf2(std::string_view password, std::span<const uint8_t> salt,
+                uint32_t iterations, size_t length) const;
+
+        /**
          * @brief SHA-256 of some data.
          *
          * @param data The data to hash

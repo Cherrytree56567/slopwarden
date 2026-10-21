@@ -247,33 +247,55 @@ namespace clientwarden {
         return m_folders_.all();
     }
 
-    std::vector<Record> Store::getCollections() const {
+    std::vector<Record> Store::getSectionRecords(std::string_view section) const {
         std::shared_lock<std::shared_mutex> lock(m_mutex_);
-        std::vector<Record> collections;
-        for (const Json& collection : at(m_top_level_, "collections")) {
-            if (collection.is_object()) {
-                collections.push_back(std::make_shared<const Json>(collection));
+        std::vector<Record> records;
+        for (const Json& record : at(m_top_level_, section)) {
+            if (record.is_object()) {
+                records.push_back(std::make_shared<const Json>(record));
             }
         }
-        return collections;
+        return records;
     }
 
-    void Store::putCollection(Json collection) {
-        std::unique_lock<std::shared_mutex> lock(m_mutex_);
-        Json& list = m_top_level_["collections"];
+    void Store::putSectionRecordLocked_(std::string_view section, Json record) {
+        Json& list = m_top_level_[SecureString(section)];
         if (!list.is_array()) {
             list = Json::array();
         }
-        SecureString id = stringAt(collection, "id");
+        SecureString id = stringAt(record, "id");
         for (Json& existing : list) {
             if (stringAt(existing, "id") == id) {
-                existing = std::move(collection);
-                persist_();
+                existing = std::move(record);
                 return;
             }
         }
-        list.push_back(std::move(collection));
+        list.push_back(std::move(record));
+    }
+
+    void Store::putSectionRecord(std::string_view section, Json record) {
+        std::unique_lock<std::shared_mutex> lock(m_mutex_);
+        putSectionRecordLocked_(section, std::move(record));
         persist_();
+    }
+
+    void Store::removeSectionRecord(std::string_view section, std::string_view id) {
+        std::unique_lock<std::shared_mutex> lock(m_mutex_);
+        Json& list = m_top_level_[SecureString(section)];
+        if (list.is_array()) {
+            list.erase(std::remove_if(list.begin(), list.end(),
+                               [id](const Json& record) { return stringAt(record, "id") == id; }),
+                    list.end());
+        }
+        persist_();
+    }
+
+    std::vector<Record> Store::getCollections() const {
+        return getSectionRecords("collections");
+    }
+
+    void Store::putCollection(Json collection) {
+        putSectionRecord("collections", std::move(collection));
     }
 
     void Store::removeCollection(std::string_view id) {

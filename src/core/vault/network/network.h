@@ -318,6 +318,76 @@ namespace clientwarden {
         bool deleteCollection(std::string_view organization_id, std::string_view id);
 
         /**
+         * @brief POST /api/sends: creates a text Send.
+         *
+         * @param send The encrypted Send
+         * @return The server's copy, or nullopt
+         */
+        std::optional<Json> createSend(const Json& send);
+
+        /**
+         * @brief Creates a file Send: registers it, then uploads the encrypted file.
+         *
+         * @param send The encrypted Send (its file.fileName is encrypted)
+         * @param encrypted_content The file from Crypto::encryptBuffer
+         * @param on_progress Upload progress, may be null
+         * @return The server's copy, or nullopt
+         */
+        std::optional<Json> createFileSend(const Json& send,
+                std::span<const uint8_t> encrypted_content, std::function<void(float)> on_progress);
+
+        /**
+         * @brief PUT /api/sends/{id}.
+         *
+         * @param id The Send id
+         * @param send The encrypted Send
+         * @return The server's copy, or nullopt
+         */
+        std::optional<Json> updateSend(std::string_view id, const Json& send);
+
+        /**
+         * @brief PUT /api/sends/{id}/remove-password.
+         *
+         * @param id The Send id
+         * @return The server's copy, or nullopt
+         */
+        std::optional<Json> removeSendPassword(std::string_view id);
+
+        /**
+         * @brief DELETE /api/sends/{id}.
+         *
+         * @param id The Send id
+         * @return True on success
+         */
+        bool deleteSend(std::string_view id);
+
+        /**
+         * @brief Opens someone's Send. Unauthenticated, and sent to the link's own server.
+         *
+         * @param origin The Send server, e.g. https://vault.bitwarden.com
+         * @param access_id From the link
+         * @param password_hash From Send password protection, or empty
+         * @return {status, body}: 200 with the encrypted Send, 401 if a password is needed or
+         * wrong, 404 if gone; status 0 if unreachable
+         */
+        HttpResponse accessSend(std::string_view origin, std::string_view access_id,
+                std::string_view password_hash);
+
+        /**
+         * @brief Downloads the (encrypted) file of someone's file Send.
+         *
+         * @param origin The Send server
+         * @param send_id The Send id (from accessSend)
+         * @param file_id The file id (from accessSend)
+         * @param password_hash As for accessSend
+         * @param on_progress Download progress, may be null
+         * @return The encrypted file, or nullopt
+         */
+        std::optional<SecureBytes> accessSendFile(std::string_view origin, std::string_view send_id,
+                std::string_view file_id, std::string_view password_hash,
+                std::function<void(float)> on_progress);
+
+        /**
          * @brief Uploads an attachment (prepare, then upload the body).
          *
          * @param cipher_id The owning cipher
@@ -414,7 +484,10 @@ namespace clientwarden {
         SyncFolderUpdate = 8,
         SyncCipherDelete = 9,
         SyncSettings = 10,
-        LogOut = 11
+        LogOut = 11,
+        SyncSendCreate = 12,
+        SyncSendUpdate = 13,
+        SyncSendDelete = 14
     };
 
     /**

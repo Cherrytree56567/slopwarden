@@ -130,6 +130,9 @@ namespace clientwarden::testing {
         std::map<SecureString, Json> m_collections;
         bool m_collections_v2 = true;   // false: only the older /collections route exists
 
+        std::map<SecureString, Json> m_sends;
+        std::map<SecureString, SecureBytes> m_send_files;
+
         std::mutex m_mutex;
         std::vector<HttpRequest> m_requests;
 
@@ -276,6 +279,16 @@ namespace clientwarden::testing {
             if (path == "/identity/connect/token") {
                 return token_(parseForm(request.m_body));
             }
+            if (path.starts_with("https://blob.example/send-")) {
+                std::map<SecureString, SecureBytes>::iterator file = m_send_files.find(path.substr(26));
+                if (file == m_send_files.end()) {
+                    return respond_(404, Json());
+                }
+                HttpResponse response;
+                response.m_status = 200;
+                response.m_body = file->second;
+                return response;
+            }
             if (path.starts_with("https://blob.example/")) {
                 std::map<SecureString, SecureBytes>::iterator blob = m_blobs.find(path.substr(21));
                 if (blob == m_blobs.end()) {
@@ -293,6 +306,9 @@ namespace clientwarden::testing {
                 return response;
             }
 
+            if (path.starts_with("https://vault.example/api/sends/")) {
+                return sendAccess_(request);    // anonymous, via the link's origin
+            }
             if (headerOf(request, "Authorization") != SecureString("Bearer ") + m_access_token) {
                 return respond_(401, Json());
             }
@@ -333,6 +349,9 @@ namespace clientwarden::testing {
             }
             if (path.starts_with("/api/ciphers/")) {
                 return cipher_(request, std::move(body));
+            }
+            if (path.starts_with("/api/sends")) {
+                return send_(request, std::move(body));
             }
             if (path.starts_with("/api/organizations/")) {
                 return organization_(request, std::move(body));
@@ -432,6 +451,10 @@ namespace clientwarden::testing {
             for (std::pair<const SecureString, Json>& folder : m_folders) {
                 folders.push_back(folder.second);
             }
+            Json sends = Json::array();
+            for (std::pair<const SecureString, Json>& send : m_sends) {
+                sends.push_back(send.second);
+            }
             Json collections = Json::array();
             for (std::pair<const SecureString, Json>& collection : m_collections) {
                 collections.push_back(collection.second);
@@ -455,12 +478,108 @@ namespace clientwarden::testing {
                 cipher["edit"] = editable;
             }
             return { { "profile", profile() }, { "ciphers", ciphers }, { "folders", folders },
-                { "collections", collections }, { "domains", m_domains } };
+                { "collections", collections }, { "sends", sends }, { "domains", m_domains } };
         }
 
         /**
          * @brief Handles /api/ciphers/{id}[/action].
          */
+        /**
+         * @brief The owner's Send routes.
+         */
+        HttpResponse send_(HttpRequest request, Json body) {
+            const SecureString& path = request.m_path;
+            if ((path == "/api/sends" || path == "/api/sends/file/v2") && request.m_method == HttpMethod::Post) {
+                SecureString id = SecureString("send-") + uuid::generate();
+                body["id"] = id;
+                body["accessId"] = SecureString("acc") + id.substr(5, 8);
+                body["accessCount"] = 0;
+                body["revisionDate"] = timestamp::now();
+                if (path == "/api/sends/file/v2") {
+                    body["file"]["id"] = SecureString("file-") + uuid::generate();
+                    body["file"]["sizeName"] = "1 KB";
+                    body.erase("fileLength");
+                    m_sends[id] = body;
+                    return respond_(200, { { "sendResponse", body }, { "url", "/upload" }, { "fileUploadType", 0 } });
+                }
+                m_sends[id] = body;
+                return respond_(200, body);
+            }
+
+            SecureString rest = path.substr(11);    // after /api/sends/
+            SecureString id = rest.substr(0, rest.find('/'));
+            SecureString action = rest.size() > id.size() ? rest.substr(id.size() + 1) : SecureString();
+            if (!m_sends.contains(id)) {
+                return respond_(404, Json());
+            }
+            Json& stored = m_sends[id];
+            if (action.starts_with("file/") && request.m_method == HttpMethod::Post) {
+                m_send_files[id] = request.m_file ? request.m_file->m_content : SecureBytes();
+                return respond_(200, Json());
+            }
+            if (action == "remove-password") {
+                stored["password"] = nullptr;
+                return respond_(200, stored);
+            }
+            if (action.empty() && request.m_method == HttpMethod::Put) {
+                for (Json::iterator it = body.begin(); it != body.end(); ++it) {
+                    stored[it.key()] = it.value();
+                }
+                stored["revisionDate"] = timestamp::now();
+                return respond_(200, stored);
+            }
+            if (action.empty() && request.m_method == HttpMethod::Delete) {
+                m_sends.erase(id);
+                m_send_files.erase(id);
+                return respond_(200, Json());
+            }
+            return respond_(404, Json());
+        }
+
+        /**
+         * @brief Anonymous recipients opening a Send (POST access, then the file).
+         */
+        HttpResponse sendAccess_(HttpRequest request) {
+            SecureString rest = request.m_path.substr(SecureString("https://vault.example/api/sends/").size());
+            Json body = Json::parse(request.m_body, nullptr, false);
+
+            if (rest.starts_with("access/")) {
+                SecureString access_id = rest.substr(7);
+                for (std::pair<const SecureString, Json>& entry : m_sends) {
+                    Json& send = entry.second;
+                    if (stringAt(send, "accessId") != access_id) {
+                        continue;
+                    }
+                    const Json& max = at(send, "maxAccessCount");
+                    bool used_up = max.is_number_integer() && send["accessCount"].get<int>() >= max.get<int>();
+                    if (at(send, "disabled") == true || used_up) {
+                        return respond_(404, Json());
+                    }
+                    if (at(send, "password").is_string() && stringAt(body, "password") != stringAt(send, "password")) {
+                        return respond_(401, Json());
+                    }
+                    send["accessCount"] = send["accessCount"].get<int>() + 1;
+                    return respond_(200, { { "id", entry.first }, { "type", send["type"] }, { "name", send["name"] },
+                        { "text", at(send, "text") }, { "file", at(send, "file") },
+                        { "expirationDate", at(send, "expirationDate") },
+                        { "creatorIdentifier", at(send, "hideEmail") == true ? Json() : Json(m_email) } });
+                }
+                return respond_(404, Json());
+            }
+
+            /*
+             * <sendId>/access/file/<fileId>
+            */
+            SecureString id = rest.substr(0, rest.find('/'));
+            if (!m_sends.contains(id)) {
+                return respond_(404, Json());
+            }
+            if (at(m_sends[id], "password").is_string() && stringAt(body, "password") != stringAt(m_sends[id], "password")) {
+                return respond_(401, Json());
+            }
+            return respond_(200, { { "url", SecureString("https://blob.example/send-") + id } });
+        }
+
         HttpResponse organization_(HttpRequest request, Json body) {
             SecureString rest = request.m_path.substr(19);   // after /api/organizations/
             SecureString organization_id = rest.substr(0, rest.find('/'));

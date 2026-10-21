@@ -49,6 +49,12 @@ namespace clientwarden {
         m_generator_ = std::make_shared<Generator>(m_crypto_, loadWordList_(std::move(resources)));
         m_organizations_ =
                 std::make_shared<Organizations>(m_crypto_, m_network_, m_store_, m_session_);
+        std::shared_ptr<Session> session = m_session_;
+        m_sends_ = std::make_shared<Sends>(
+                m_crypto_, m_network_, m_store_, m_session_, files, [session]() {
+                    std::optional<Account> account = session->loadAccount();
+                    return account ? account->m_urls.m_vault : SecureString();
+                });
 
         m_session_->onRevoked([this]() { post_([this]() { logout(); }); });
         m_sync_->onAccountKeyChanged([this]() { post_([this]() { logout(); }); });
