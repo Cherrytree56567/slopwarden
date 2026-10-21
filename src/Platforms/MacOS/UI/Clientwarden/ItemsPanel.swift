@@ -13,6 +13,10 @@ final class ItemsPanel: NSObject {
 
     @objc public var cb_query: ((String) -> [ItemElement])?
     @objc public var cb_new: ((ItemType) -> ItemElement)?
+    /*
+     * cb_newInCollection(type, collectionUUID): new organisation item in a collection
+     */
+    @objc public var cb_newInCollection: ((ItemType, UUID) -> ItemElement?)?
 
     func update(data: [ItemElement]) {
         elements = data
@@ -42,6 +46,18 @@ final class ItemsPanel: NSObject {
     }
 
     func newItem(itemType: ItemType) {
+        if let collection = NavigationPanel.instance.selectedCollection() {
+            if let res = cb_newInCollection?(itemType, collection.id) {
+                elements.append(res)
+                query()
+                SidePanel.instance.viewItem(cb_uuid: res.uuid)
+                SidePanel.instance.saveSnapshot()
+                SidePanel.instance.editable = true
+            } else {
+                ToastStore.instance.toasts.append(Toast(message: "Couldn't create an item in this collection"))
+            }
+            return
+        }
         if let res = cb_new?(itemType) {
             if (res != nil) {
                 elements.append(res)

@@ -15,6 +15,48 @@ class Folder: NSObject, Identifiable {
     }
 }
 
+/*
+ * A collection inside an organisation. Items can belong to several.
+ */
+@objcMembers
+class VaultCollection: NSObject, Identifiable {
+    public var id: UUID { uuid }
+    @objc public var uuid: UUID
+    @objc public var organizationUUID: UUID
+    @objc public var name: String
+    @objc public var readOnly: Bool
+    @objc public var manage: Bool
+
+    init(uuid: UUID, organizationUUID: UUID, name: String, readOnly: Bool, manage: Bool) {
+        self.uuid = uuid
+        self.organizationUUID = organizationUUID
+        self.name = name
+        self.readOnly = readOnly
+        self.manage = manage
+        super.init()
+    }
+}
+
+/*
+ * An organisation the user belongs to, with the collections they can see.
+ */
+@objcMembers
+class Organization: NSObject, Identifiable {
+    public var id: UUID { uuid }
+    @objc public var uuid: UUID
+    @objc public var name: String
+    @objc public var canManageCollections: Bool
+    @objc public var collections: [VaultCollection]
+
+    init(uuid: UUID, name: String, canManageCollections: Bool, collections: [VaultCollection]) {
+        self.uuid = uuid
+        self.name = name
+        self.canManageCollections = canManageCollections
+        self.collections = collections
+        super.init()
+    }
+}
+
 @objc
 enum ItemType: Int {
     case Login

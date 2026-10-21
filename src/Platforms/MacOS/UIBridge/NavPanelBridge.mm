@@ -24,6 +24,7 @@
     [self cb_CreateFolder];
     [self cb_DeleteFolder];
     [self cb_RenameFolder];
+    [self cb_organizations];
 }
 
 + (void)toast:(NSString*)message {
@@ -187,6 +188,92 @@
             return YES;
         } catch (...) {
             [NavPanelBridge toast:@"Failed to Rename Folder"];
+            return NO;
+        }
+    };
+}
+
+/*
+ * Organisations and collections: the sidebar tree, the item lists for each, and collection
+ * management for members allowed to do it.
+ */
++ (void)cb_organizations {
+    NavigationPanel* nav = NavigationPanel.instance;
+
+    nav.cb_getOrganizations = ^NSArray* _Nonnull {
+        NSMutableArray<Organization*>* organizations = [NSMutableArray array];
+        try {
+            std::shared_ptr<clientwarden::Organizations> parts =
+                clientwarden::VaultManager::instance().getActiveVault()->getOrganizations();
+            std::vector<clientwarden::CollectionInfo> collections = parts->getCollections("");
+
+            for (const clientwarden::OrganizationInfo& info : parts->getOrganizations()) {
+                if (!info.m_key_available || !info.m_enabled) {
+                    continue;
+                }
+                NSUUID* uuid = [[NSUUID alloc] initWithUUIDString:[NSString stringWithUTF8String:info.m_id.c_str()]];
+                NSMutableArray<VaultCollection*>* children = [NSMutableArray array];
+                for (const clientwarden::CollectionInfo& collection : collections) {
+                    if (collection.m_organization_id != info.m_id) {
+                        continue;
+                    }
+                    NSUUID* collectionUUID = [[NSUUID alloc] initWithUUIDString:[NSString stringWithUTF8String:collection.m_id.c_str()]];
+                    NSString* name = [[NSString alloc] initWithBytes:collection.m_name.data() length:collection.m_name.size() encoding:NSUTF8StringEncoding];
+                    [children addObject:[[VaultCollection alloc] initWithUuid:collectionUUID organizationUUID:uuid name:name
+                        readOnly:collection.m_read_only manage:collection.m_manage]];
+                }
+                NSString* name = [[NSString alloc] initWithBytes:info.m_name.data() length:info.m_name.size() encoding:NSUTF8StringEncoding];
+                [organizations addObject:[[Organization alloc] initWithUuid:uuid name:name
+                    canManageCollections:info.m_can_manage_collections collections:children]];
+            }
+        } catch (...) {
+            /*
+             * Polled every second; stay quiet while locked.
+             */
+        }
+        return organizations;
+    };
+
+    nav.cb_organization = ^NSArray* _Nonnull(NSUUID* uuid) {
+        clientwarden::SecureString id = [NavPanelBridge lowerUUID:uuid];
+        return [NavPanelBridge items:[id](clientwarden::CipherQuery& q) { q.notInBin().notArchived().inOrganization(id); }
+            failure:@"Failed to Get Organization Items"];
+    };
+
+    nav.cb_collection = ^NSArray* _Nonnull(NSUUID* uuid) {
+        clientwarden::SecureString id = [NavPanelBridge lowerUUID:uuid];
+        return [NavPanelBridge items:[id](clientwarden::CipherQuery& q) { q.notInBin().notArchived().inCollection(id); }
+            failure:@"Failed to Get Collection Items"];
+    };
+
+    nav.cb_createCollection = ^NSUUID* _Nullable(NSUUID* organization, NSString* name) {
+        try {
+            std::optional<clientwarden::SecureString> id = clientwarden::VaultManager::instance().getActiveVault()
+                ->getOrganizations()->createCollection([NavPanelBridge lowerUUID:organization], name.UTF8String);
+            if (!id) {
+                return nil;
+            }
+            return [[NSUUID alloc] initWithUUIDString:[NSString stringWithUTF8String:id->c_str()]];
+        } catch (const clientwarden::VaultError& e) {
+            [NavPanelBridge toast:[NSString stringWithUTF8String:e.what()]];
+            return nil;
+        }
+    };
+
+    nav.cb_renameCollection = ^BOOL(NSUUID* uuid, NSString* name) {
+        try {
+            return (BOOL)clientwarden::VaultManager::instance().getActiveVault()
+                ->getOrganizations()->renameCollection([NavPanelBridge lowerUUID:uuid], name.UTF8String);
+        } catch (...) {
+            return NO;
+        }
+    };
+
+    nav.cb_deleteCollection = ^BOOL(NSUUID* uuid) {
+        try {
+            return (BOOL)clientwarden::VaultManager::instance().getActiveVault()
+                ->getOrganizations()->deleteCollection([NavPanelBridge lowerUUID:uuid]);
+        } catch (...) {
             return NO;
         }
     };

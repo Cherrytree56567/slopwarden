@@ -50,6 +50,15 @@ final class SidePanel: NSObject {
     public var editable: Bool = false
     public var viewable: Bool = false
     public var favorite: Bool = false
+
+    /*
+     * Ownership (set by the bridge after viewItem)
+     */
+    public var organizationUUID: UUID = UUID.empty
+    public var organizationName: String = ""
+    public var collectionUUIDs: [UUID] = []
+    public var collectionNames: [String] = []
+    public var readOnly: Bool = false
     
     public var itemFields: [GenericItemData] = []
     public var customFields: [FieldItemData] = []
@@ -89,6 +98,19 @@ final class SidePanel: NSObject {
     @objc public var cb_removeAttachment: ((UUID, String) -> Bool)?
     @objc public var cb_uploadAttachment: ((UUID) -> Bool)?
     
+    /*
+     * cb_shareToOrganization(itemUUID, organizationUUID, collectionUUIDs)
+     */
+    @objc public var cb_shareToOrganization: ((UUID, UUID, [UUID]) -> Bool)?
+    /*
+     * cb_setCollections(itemUUID, collectionUUIDs)
+     */
+    @objc public var cb_setCollections: ((UUID, [UUID]) -> Bool)?
+    /*
+     * cb_moveToCollection(collectionUUID, itemUUID), used by drag and drop
+     */
+    @objc public var cb_moveToCollection: ((UUID, UUID) -> Bool)?
+
     @objc public var cb_genRandPasswd: ((Bool, Bool, Bool, Int) -> String)?
     @objc public var cb_genSimplPasswd: ((Bool, Int) -> String)?
     @objc public var cb_genPinPasswd: ((Int) -> String)?
@@ -117,7 +139,46 @@ final class SidePanel: NSObject {
         return ""
     }
     
+    func setOwnership(organizationUUID: UUID, organizationName: String, collectionUUIDs: [UUID], collectionNames: [String], readOnly: Bool) {
+        self.organizationUUID = organizationUUID
+        self.organizationName = organizationName
+        self.collectionUUIDs = collectionUUIDs
+        self.collectionNames = collectionNames
+        self.readOnly = readOnly
+    }
+
+    func shareToOrganization(organizationUUID: UUID, collections: [UUID]) {
+        if let result = cb_shareToOrganization?(uuid, organizationUUID, collections) {
+            if (result) {
+                viewItem(cb_uuid: uuid)
+                NavigationPanel.instance.loadCurrentTab(refresh: true)
+            } else {
+                ToastStore.instance.toasts.append(Toast(message: "Failed to move item to organization"))
+            }
+        } else {
+            ToastStore.instance.toasts.append(Toast(message: "No callback set for move to organization"))
+        }
+    }
+
+    func setCollections(collections: [UUID]) {
+        if let result = cb_setCollections?(uuid, collections) {
+            if (result) {
+                viewItem(cb_uuid: uuid)
+                NavigationPanel.instance.loadCurrentTab(refresh: true)
+            } else {
+                ToastStore.instance.toasts.append(Toast(message: "Failed to change collections"))
+            }
+        } else {
+            ToastStore.instance.toasts.append(Toast(message: "No callback set for collections"))
+        }
+    }
+
     func closeItem() {
+        organizationUUID = UUID.empty
+        organizationName = ""
+        collectionUUIDs = []
+        collectionNames = []
+        readOnly = false
         viewable = false
         editable = false
         name = ""
@@ -445,6 +506,7 @@ struct SidePanelView: View {
     @State private var showNewFieldCallout: Bool = false
     @State private var showDeleteCallout: Bool = false
     @State private var showDeleteMultiple: Bool = false
+    @State private var showOrganizationSheet: Bool = false
     
     @Bindable var data: SidePanel = SidePanel.instance
     
@@ -498,6 +560,11 @@ struct SidePanelView: View {
                                 .font(.system(size: 8))
                                 .foregroundStyle(.secondary)
                                 .padding(.top, -10)
+                            if (data.organizationUUID != UUID.empty) {
+                                Label("\(data.organizationName)\(data.collectionNames.isEmpty ? "" : " · " + data.collectionNames.joined(separator: ", "))\(data.readOnly ? " · Read-only" : "")", systemImage: "building.2")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         
                         Spacer()
@@ -714,6 +781,9 @@ struct SidePanelView: View {
         .padding(.top, -1)
         .padding(.trailing, -1)
         .padding(.bottom, -1)
+        .sheet(isPresented: $showOrganizationSheet) {
+            OrganizationSheet(data: data, isPresented: $showOrganizationSheet)
+        }
         .toolbar {
             if (data.viewable) {
                 if (NavigationPanel.instance.selection == NavItems.trash) {
@@ -789,7 +859,21 @@ struct SidePanelView: View {
                      * to the normal field (eg: itemFields). If cancel is pressed, then edit_*
                      * fields will be discarded
                      */
-                    if (ItemsPanel.instance.selectedItems.isEmpty) {
+                    if (ItemsPanel.instance.selectedItems.isEmpty && !NavigationPanel.instance.organizations.isEmpty
+                        && (data.organizationUUID == UUID.empty || !data.readOnly)) {
+                        ToolbarItem {
+                            Button {
+                                showOrganizationSheet = true
+                            } label: {
+                                Image(systemName: data.organizationUUID == UUID.empty ? "person.2.badge.plus" : "rectangle.stack")
+                                    .imageScale(.medium)
+                            }
+                            .help(data.organizationUUID == UUID.empty ? "Move to Organization…" : "Collections…")
+                            .glassEffect(.regular.interactive(), in: Circle())
+                        }
+                        .sharedBackgroundVisibility(.hidden)
+                    }
+                    if (ItemsPanel.instance.selectedItems.isEmpty && !data.readOnly) {
                         ToolbarItem {
                             Button {
                                 data.editable = true
@@ -986,4 +1070,80 @@ struct SidePanelView: View {
 
 #Preview {
     PreviewData().test1()
+}
+
+/*
+ * Moves a personal item into an organisation, or changes which collections an organisation
+ * item is in. The organisation can't be changed once an item belongs to one.
+ */
+struct OrganizationSheet: View {
+    @Bindable var data: SidePanel
+    @Binding var isPresented: Bool
+
+    @State private var organizationUUID: UUID = UUID.empty
+    @State private var selected: Set<UUID> = []
+
+    private var organizations: [Organization] { NavigationPanel.instance.organizations }
+
+    private var collections: [VaultCollection] {
+        organizations.first(where: { $0.id == organizationUUID })?.collections.filter { !$0.readOnly } ?? []
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(data.organizationUUID == UUID.empty ? "Move to Organization" : "Collections")
+                .font(.headline)
+
+            if (data.organizationUUID == UUID.empty) {
+                Picker("Organization", selection: $organizationUUID) {
+                    ForEach(organizations) { organization in
+                        Text(organization.name).tag(organization.id)
+                    }
+                }
+                .onChange(of: organizationUUID) { _, _ in
+                    selected = []
+                }
+                Text("Moving an item to an organization can't be undone.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            List(collections) { collection in
+                Toggle(collection.name, isOn: Binding(
+                    get: { selected.contains(collection.id) },
+                    set: { on in
+                        if (on) { selected.insert(collection.id) } else { selected.remove(collection.id) }
+                    }))
+            }
+            .frame(minHeight: 160)
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) {
+                    isPresented = false
+                }
+                Button(data.organizationUUID == UUID.empty ? "Move" : "Save") {
+                    if (data.organizationUUID == UUID.empty) {
+                        data.shareToOrganization(organizationUUID: organizationUUID, collections: Array(selected))
+                    } else {
+                        data.setCollections(collections: Array(selected))
+                    }
+                    isPresented = false
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(selected.isEmpty)
+            }
+        }
+        .padding()
+        .frame(width: 340)
+        .onAppear {
+            if (data.organizationUUID == UUID.empty) {
+                organizationUUID = organizations.first?.id ?? UUID.empty
+                selected = []
+            } else {
+                organizationUUID = data.organizationUUID
+                selected = Set(data.collectionUUIDs)
+            }
+        }
+    }
 }

@@ -282,7 +282,15 @@ namespace {
                                                            value_1:NS(passport.getSurname())]];
         }
 
+        /*
+         * Items in "hide passwords" collections never send secret values to the UI.
+        */
+        bool hide = !item.canViewPassword();
+
         for (const FieldRow& row : RowsFor(type)) {
+            if (hide && row.type == GenericItemTypePassword) {
+                continue;
+            }
             [rows addObject:Row(@(row.title), NS(row.get(item)), row.type)];
         }
 
@@ -302,7 +310,7 @@ namespace {
              * The code is generated on demand so it stays current while
              * the panel is open.
             */
-            [rows addObject:[[GenericItemData alloc] initWithTitle:@"Two Factor Authentication"
+            if (!hide) [rows addObject:[[GenericItemData alloc] initWithTitle:@"Two Factor Authentication"
                                                              value:NS(login.getTotpSecret())
                                                               type:GenericItemTypeTotp
                                                         cb_getTOTP:^TOTPResult* _Nonnull {
@@ -324,7 +332,7 @@ namespace {
             }
             [rows addObject:Row(@"Websites", [websites componentsJoinedByString:@"\n"], GenericItemTypeWebsite)];
 
-            for (const clientwarden::PasswordHistoryEntry& entry : login.getPasswordHistory()) {
+            for (const clientwarden::PasswordHistoryEntry& entry : hide ? std::vector<clientwarden::PasswordHistoryEntry>() : login.getPasswordHistory()) {
                 NSDate* date = [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)entry.m_last_used];
                 NSString* s_date = [NSDateFormatter localizedStringFromDate:date
                                                                   dateStyle:NSDateFormatterMediumStyle
@@ -433,6 +441,7 @@ namespace {
     [self cb_archiveMultiple];
     [self cb_unarchiveMultiple];
     [self cb_sidebar];
+    [self cb_organizations];
     [self cb_downloadAttachment];
     [self cb_uploadAttachment];
     [self cb_removeAttachment];
@@ -704,9 +713,11 @@ static bool sidebar(NSUUID* uuid) {
 
         Display(v_inst, *item, itemFields, passwordHistory);
 
+        bool hide = !item->canViewPassword();
         for (const GenericItem::CustomField& field : item->getFields()) {
+            bool secret = hide && field.m_type == clientwarden::CustomFieldType::Hidden;
             [customFields addObject:[[FieldItemData alloc] initWithTitle:NS(field.m_name)
-                                                                   value:NS(field.m_value)
+                                                                   value:secret ? @"" : NS(field.m_value)
                                                                     type:(FieldItemType)((int)field.m_type)]];
         }
 
@@ -729,6 +740,31 @@ static bool sidebar(NSUUID* uuid) {
                             repromptItem:item->getReprompt() folderUUID:folderUUID favorite:item->getFavorite()
                             itemFields:itemFields customFields:customFields itemHistory:itemHistory passwordHistory:passwordHistory
                             attachmentItems:attachments notes:NS(item->getNotes())];
+
+        /*
+         * Ownership: organisation name and collection names, and whether it's read-only.
+        */
+        NSUUID* organizationUUID = [[NSUUID alloc] initWithUUIDString:NS(item->getOrganizationId().value_or(NoFolder))];
+        NSString* organizationName = @"";
+        NSMutableArray<NSUUID*>* collectionUUIDs = [NSMutableArray array];
+        NSMutableArray<NSString*>* collectionNames = [NSMutableArray array];
+        if (std::optional<SecureString> organization = item->getOrganizationId()) {
+            for (const clientwarden::OrganizationInfo& info : v_inst->getOrganizations()->getOrganizations()) {
+                if (info.m_id == *organization) {
+                    organizationName = NS(info.m_name);
+                }
+            }
+            std::vector<SecureString> ids = item->getCollectionIds();
+            for (const clientwarden::CollectionInfo& collection : v_inst->getOrganizations()->getCollections(*organization)) {
+                if (std::find(ids.begin(), ids.end(), collection.m_id) != ids.end()) {
+                    [collectionUUIDs addObject:[[NSUUID alloc] initWithUUIDString:NS(collection.m_id)]];
+                    [collectionNames addObject:NS(collection.m_name)];
+                }
+            }
+        }
+        [SidePanel.instance setOwnershipWithOrganizationUUID:organizationUUID organizationName:organizationName
+                                            collectionUUIDs:collectionUUIDs collectionNames:collectionNames
+                                                   readOnly:!item->canEdit()];
 
         return true;
     } catch (...) {
@@ -967,9 +1003,25 @@ static bool sidebar(NSUUID* uuid) {
 
             std::shared_ptr<GenericItem> item = Load(v_inst, uuid);
 
+            /*
+             * Hidden values aren't shown for "hide passwords" items, so keep the stored ones
+             * rather than saving the blanks the UI sends back.
+            */
+            std::vector<GenericItem::CustomField> previous = item->getFields();
+            bool hide = !item->canViewPassword();
+
             item->clearFields();
             for (FieldItemData* field in customFields) {
-                item->addField((clientwarden::CustomFieldType)((int)field.type), View(field.title), View(field.value));
+                clientwarden::CustomFieldType kind = (clientwarden::CustomFieldType)((int)field.type);
+                SecureString value(View(field.value));
+                if (hide && kind == clientwarden::CustomFieldType::Hidden && value.empty()) {
+                    for (const GenericItem::CustomField& old : previous) {
+                        if (old.m_type == kind && old.m_name == View(field.title)) {
+                            value = old.m_value;
+                        }
+                    }
+                }
+                item->addField(kind, View(field.title), value);
             }
 
             FileUnder(*item, folderUUID);
@@ -1041,6 +1093,74 @@ static bool sidebar(NSUUID* uuid) {
         } catch (...) {
             ShowToast(@"Failed to Generate Pin");
             return @"";
+        }
+    };
+}
+
+/*
+ * Organisation actions: move a personal item into an organisation, change an organisation
+ * item's collections, and the drag-onto-collection shortcut for either.
+ */
++ (void)cb_organizations {
+    SidePanel.instance.cb_shareToOrganization = ^BOOL(NSUUID* uuid, NSUUID* organization, NSArray<NSUUID*>* collections) {
+        try {
+            std::vector<SecureString> ids;
+            for (NSUUID* collection in collections) {
+                ids.push_back(ItemId(collection));
+            }
+            return (BOOL)Load(ActiveVault(), uuid)->shareTo(ItemId(organization), ids);
+        } catch (const clientwarden::VaultError& e) {
+            ShowToast([NSString stringWithUTF8String:e.what()]);
+            return NO;
+        }
+    };
+
+    SidePanel.instance.cb_setCollections = ^BOOL(NSUUID* uuid, NSArray<NSUUID*>* collections) {
+        try {
+            std::vector<SecureString> ids;
+            for (NSUUID* collection in collections) {
+                ids.push_back(ItemId(collection));
+            }
+            return (BOOL)Load(ActiveVault(), uuid)->setCollections(ids);
+        } catch (const clientwarden::VaultError& e) {
+            ShowToast([NSString stringWithUTF8String:e.what()]);
+            return NO;
+        }
+    };
+
+    SidePanel.instance.cb_moveToCollection = ^BOOL(NSUUID* collectionUUID, NSUUID* uuid) {
+        try {
+            std::shared_ptr<Vault> v_inst = ActiveVault();
+            SecureString collection = ItemId(collectionUUID);
+
+            SecureString organization;
+            for (const clientwarden::CollectionInfo& info : v_inst->getOrganizations()->getCollections("")) {
+                if (info.m_id == collection) {
+                    organization = info.m_organization_id;
+                }
+            }
+            if (organization.empty()) {
+                return NO;
+            }
+
+            std::shared_ptr<GenericItem> item = Load(v_inst, uuid);
+            std::optional<SecureString> current = item->getOrganizationId();
+            if (!current) {
+                return (BOOL)item->shareTo(organization, { collection });
+            }
+            if (*current != organization) {
+                ShowToast(@"Items can't move between organizations");
+                return NO;
+            }
+
+            std::vector<SecureString> ids = item->getCollectionIds();
+            if (std::find(ids.begin(), ids.end(), collection) == ids.end()) {
+                ids.push_back(collection);
+            }
+            return (BOOL)item->setCollections(ids);
+        } catch (const clientwarden::VaultError& e) {
+            ShowToast([NSString stringWithUTF8String:e.what()]);
+            return NO;
         }
     };
 }

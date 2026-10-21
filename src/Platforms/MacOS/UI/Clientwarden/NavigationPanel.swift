@@ -14,6 +14,8 @@ enum NavItems: Hashable {
     case drivers_license
     case passport
     case folder(UUID)
+    case organization(UUID)
+    case collection(UUID)
 }
 
 @objcMembers
@@ -25,6 +27,7 @@ final class NavigationPanel: NSObject {
     public var selection: NavItems = .all_items
     
     public var folders: [Folder] = []
+    public var organizations: [Organization] = []
     
     @objc public var cb_createFolder: ((String) -> UUID?)?
     @objc public var cb_deleteFolder: ((UUID) -> Bool)?
@@ -47,6 +50,40 @@ final class NavigationPanel: NSObject {
     @objc public var cb_folder: ((UUID) -> [ItemElement])?
 
     @objc public var cb_getFolders: (() -> [Folder])?
+
+    @objc public var cb_getOrganizations: (() -> [Organization])?
+    @objc public var cb_organization: ((UUID) -> [ItemElement])?
+    @objc public var cb_collection: ((UUID) -> [ItemElement])?
+    /*
+     * cb_createCollection(organizationUUID, name) -> new collection UUID
+     */
+    @objc public var cb_createCollection: ((UUID, String) -> UUID?)?
+    @objc public var cb_renameCollection: ((UUID, String) -> Bool)?
+    @objc public var cb_deleteCollection: ((UUID) -> Bool)?
+
+    func getOrganizations() {
+        if (ClientwardenWindow.instance.state != .Vault) {
+            return
+        }
+        if let c_organizations = cb_getOrganizations?() {
+            organizations = c_organizations
+                                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        }
+    }
+
+    /*
+     * The collection currently selected in the sidebar, if any. New items are created there.
+     */
+    func selectedCollection() -> VaultCollection? {
+        if case .collection(let uuid) = selection {
+            for organization in organizations {
+                if let collection = organization.collections.first(where: { $0.id == uuid }) {
+                    return collection
+                }
+            }
+        }
+        return nil
+    }
 
     func getFolders() {
         if (ClientwardenWindow.instance.state != .Vault) {
@@ -112,6 +149,10 @@ final class NavigationPanel: NSObject {
                 elements = cb_Passport?()
             case .folder(let uuid):
                 elements = cb_folder?(uuid)
+            case .organization(let uuid):
+                elements = cb_organization?(uuid)
+            case .collection(let uuid):
+                elements = cb_collection?(uuid)
         }
         
         if let elements {
@@ -134,6 +175,13 @@ struct NavigationPanelView: View {
     @State private var showDeleteFolder: Folder = Folder(uuid: UUID.empty, name: "")
     @State private var renameAlertId: UUID = UUID()
     @State private var folderName: String = ""
+
+    @State private var showCollectionNameAlert: Bool = false
+    @State private var collectionNameTarget: UUID = UUID.empty
+    @State private var collectionNameIsNew: Bool = false
+    @State private var collectionName: String = ""
+    @State private var showDeleteCollectionAlert: Bool = false
+    @State private var deleteCollectionTarget: UUID = UUID.empty
     
     @Bindable var data: NavigationPanel = NavigationPanel.instance
     
@@ -323,6 +371,71 @@ struct NavigationPanelView: View {
                     }
                 }
             }
+
+            if (!data.organizations.isEmpty) {
+                Section("Organizations") {
+                    ForEach(data.organizations) { organization in
+                        DisclosureGroup {
+                            ForEach(organization.collections) { collection in
+                                Label(collection.name, systemImage: collection.readOnly ? "lock.rectangle.stack" : "rectangle.stack")
+                                    .tag(NavItems.collection(collection.id))
+                                    .contextMenu {
+                                        if (organization.canManageCollections || collection.manage) {
+                                            Button {
+                                                collectionNameIsNew = false
+                                                collectionNameTarget = collection.id
+                                                collectionName = collection.name
+                                                showCollectionNameAlert = true
+                                            } label: {
+                                                Label("Rename", systemImage: "character.cursor.ibeam")
+                                                    .labelStyle(TitleAndIconLabelStyle())
+                                            }
+                                            Button(role: .destructive) {
+                                                deleteCollectionTarget = collection.id
+                                                showDeleteCollectionAlert = true
+                                            } label: {
+                                                Label("Delete", systemImage: "minus.circle")
+                                                    .labelStyle(TitleAndIconLabelStyle())
+                                            }
+                                        }
+                                    }
+                                    .dropDestination(for: DragableItemElement.self) { droppedItems, location in
+                                        /*
+                                         * Dropping a personal item here moves it into the organisation;
+                                         * dropping an organisation item adds it to this collection.
+                                         */
+                                        for uuid in (droppedItems.flatMap{$0.uuids}) {
+                                            if let result = SidePanel.instance.cb_moveToCollection?(collection.id, uuid) {
+                                                if (!result) {
+                                                    ToastStore.instance.toasts.append(Toast(message: "Failed to move item to collection"))
+                                                }
+                                            } else {
+                                                ToastStore.instance.toasts.append(Toast(message: "No callback set for move to collection"))
+                                            }
+                                        }
+                                        _ = NavigationPanel.instance.loadCurrentTab(refresh: true)
+                                    }
+                            }
+                        } label: {
+                            Label(organization.name, systemImage: "building.2")
+                                .tag(NavItems.organization(organization.id))
+                                .contextMenu {
+                                    if (organization.canManageCollections) {
+                                        Button {
+                                            collectionNameIsNew = true
+                                            collectionNameTarget = organization.id
+                                            collectionName = "New Collection"
+                                            showCollectionNameAlert = true
+                                        } label: {
+                                            Label("New Collection", systemImage: "plus.rectangle.on.rectangle")
+                                                .labelStyle(TitleAndIconLabelStyle())
+                                        }
+                                    }
+                                }
+                        }
+                    }
+                }
+            }
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom) {
@@ -379,6 +492,7 @@ struct NavigationPanelView: View {
                 NavPanelBridge.setupCallbacks()
             #endif
             data.getFolders()
+            data.getOrganizations()
             loadTabElements(tab: data.selection, prev: data.selection)
         }
         .alert("Rename", isPresented: $showRenameAlert) {
@@ -413,8 +527,39 @@ struct NavigationPanelView: View {
                 try? await Task.sleep(for: .seconds(1))
                 if (!Task.isCancelled) {
                     data.getFolders()
+                    data.getOrganizations()
                 }
             }
+        }
+        .alert(collectionNameIsNew ? "New Collection" : "Rename Collection", isPresented: $showCollectionNameAlert) {
+            TextField("Collection Name", text: $collectionName)
+
+            Button("Cancel", role: .cancel) { }
+            Button("Confirm") {
+                if (collectionNameIsNew) {
+                    if (data.cb_createCollection?(collectionNameTarget, collectionName) == nil) {
+                        ToastStore.instance.toasts.append(Toast(message: "Failed to create collection"))
+                    }
+                } else if (!(data.cb_renameCollection?(collectionNameTarget, collectionName) ?? false)) {
+                    ToastStore.instance.toasts.append(Toast(message: "Failed to rename collection"))
+                }
+                data.getOrganizations()
+            }
+        } message: {
+            Text(collectionNameIsNew ? "Create a collection in this organization" : "Rename a collection")
+        }
+        .alert("Delete Collection", isPresented: $showDeleteCollectionAlert) {
+            Button("Cancel", role: .cancel) { }
+            Button("Delete", role: .destructive) {
+                if (data.cb_deleteCollection?(deleteCollectionTarget) ?? false) {
+                    data.selection = .all_items
+                    data.getOrganizations()
+                } else {
+                    ToastStore.instance.toasts.append(Toast(message: "Failed to delete collection"))
+                }
+            }
+        } message: {
+            Text("Items in this collection stay in the organization.")
         }
         .frame(minWidth: 175)
     }

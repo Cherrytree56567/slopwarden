@@ -13,6 +13,23 @@
 #include "ItemElements.h"
 
 /*
+ * Creates an unsaved organisation item of the requested type in one collection.
+ */
+static std::shared_ptr<clientwarden::GenericItem> NewOrganizationItemOfType(std::shared_ptr<clientwarden::Orchestrator> orchestrator,
+    clientwarden::CipherType type, std::string_view organization, std::vector<clientwarden::SecureString> collections) {
+    switch (type) {
+        case clientwarden::CipherType::Login: return orchestrator->createItem<clientwarden::LoginItem>(organization, collections);
+        case clientwarden::CipherType::Card: return orchestrator->createItem<clientwarden::CardItem>(organization, collections);
+        case clientwarden::CipherType::Identity: return orchestrator->createItem<clientwarden::IdentityItem>(organization, collections);
+        case clientwarden::CipherType::SshKey: return orchestrator->createItem<clientwarden::SshKeyItem>(organization, collections);
+        case clientwarden::CipherType::BankAccount: return orchestrator->createItem<clientwarden::BankAccountItem>(organization, collections);
+        case clientwarden::CipherType::DriversLicense: return orchestrator->createItem<clientwarden::DriversLicenseItem>(organization, collections);
+        case clientwarden::CipherType::Passport: return orchestrator->createItem<clientwarden::PassportItem>(organization, collections);
+        default: return orchestrator->createItem<clientwarden::NoteItem>(organization, collections);
+    }
+}
+
+/*
  * Creates an unsaved item of the requested type through its builder class.
  */
 static std::shared_ptr<clientwarden::GenericItem> NewItemOfType(std::shared_ptr<clientwarden::Orchestrator> orchestrator,
@@ -39,6 +56,7 @@ static std::shared_ptr<clientwarden::GenericItem> NewItemOfType(std::shared_ptr<
 + (void)setupCallbacks {
     [self cb_query];
     [self cb_new];
+    [self cb_newInCollection];
 }
 
 ItemType ItemTypeFor(clientwarden::CipherType type) {
@@ -176,6 +194,55 @@ NSArray<ItemElement*>* MakeItemElements(const std::vector<clientwarden::ItemSumm
                 [[ToastStore instance] addToast:toast];
             });
 
+            return nil;
+        }
+    };
+}
+
+/*
+ * New item inside the selected collection (and therefore its organisation). Organisation
+ * items are created online only.
+ */
++ (void)cb_newInCollection {
+    ItemsPanel.instance.cb_newInCollection = ^ItemElement* _Nullable(ItemType i_type, NSUUID* collectionUUID) {
+        try {
+            std::shared_ptr<clientwarden::Vault> v_inst = clientwarden::VaultManager::instance().getActiveVault();
+            clientwarden::SecureString collection = clientwarden::toLower(collectionUUID.UUIDString.UTF8String);
+
+            clientwarden::SecureString organization;
+            for (const clientwarden::CollectionInfo& info : v_inst->getOrganizations()->getCollections("")) {
+                if (info.m_id == collection) {
+                    organization = info.m_organization_id;
+                }
+            }
+            if (organization.empty()) {
+                return nil;
+            }
+
+            clientwarden::CipherType type = clientwarden::CipherType::Note;
+            switch (i_type) {
+                case ItemTypeLogin: type = clientwarden::CipherType::Login; break;
+                case ItemTypeCard: type = clientwarden::CipherType::Card; break;
+                case ItemTypeIdentity: type = clientwarden::CipherType::Identity; break;
+                case ItemTypeSSHKey: type = clientwarden::CipherType::SshKey; break;
+                case ItemTypeBankAccount: type = clientwarden::CipherType::BankAccount; break;
+                case ItemTypeDriversLicense: type = clientwarden::CipherType::DriversLicense; break;
+                case ItemTypePassport: type = clientwarden::CipherType::Passport; break;
+                default: break;
+            }
+
+            std::shared_ptr<clientwarden::GenericItem> item =
+                NewOrganizationItemOfType(v_inst->getOrchestrator(), type, organization, { collection });
+            item->setName("New Item");
+            item->commit();
+
+            NSUUID* uuid = [[NSUUID alloc] initWithUUIDString:[NSString stringWithUTF8String:item->getId().c_str()]];
+            return [[ItemElement alloc] initWithName:@"New Item" uuid:uuid type:i_type image:PlaceholderImageFor(type)];
+        } catch (const clientwarden::VaultError& e) {
+            NSString* message = [NSString stringWithUTF8String:e.what()];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[ToastStore instance] addToast:[[Toast alloc] initWithMessage:message]];
+            });
             return nil;
         }
     };
