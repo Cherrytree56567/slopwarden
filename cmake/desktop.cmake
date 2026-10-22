@@ -23,15 +23,19 @@ function(buildUI _target)
     else()
         set(CW_CARGO_OUT ${CW_CARGO_DIR}/release)
     endif()
+    # Cargo names the binary after the [[bin]] (lowercase); Windows users get ClientWarden.exe.
+    # Spelled exactly: builds on case-insensitive file systems hide a mismatch.
     if (WIN32)
+        set(CW_CARGO_BINARY clientwarden.exe)
         set(CW_UI_BINARY ClientWarden.exe)
     else()
+        set(CW_CARGO_BINARY clientwarden)
         set(CW_UI_BINARY clientwarden)
     endif()
 
     add_custom_target(UI ALL
         COMMAND ${CMAKE_COMMAND} -E env CW_LIB_DIR=${CW_APP_DIR} cargo ${CW_CARGO_ARGS}
-        COMMAND ${CMAKE_COMMAND} -E copy ${CW_CARGO_OUT}/${CW_UI_BINARY} ${CW_APP_DIR}/${CW_UI_BINARY}
+        COMMAND ${CMAKE_COMMAND} -E copy ${CW_CARGO_OUT}/${CW_CARGO_BINARY} ${CW_APP_DIR}/${CW_UI_BINARY}
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/src/Platforms/Linux
         COMMENT "Building the iced UI with Cargo"
         USES_TERMINAL
