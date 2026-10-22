@@ -54,7 +54,7 @@ TEST_CASE("MemoryFileStore follows the FileStore contract") {
 }
 
 TEST_CASE("DiskFileStore follows the FileStore contract and writes atomically") {
-    std::filesystem::path root = std::filesystem::temp_directory_path()
+    std::filesystem::path root = std::filesystem::current_path()
         / std::filesystem::path(("cw-fs-" + uuid::generate()).c_str());
     {
         DiskFileStore store(root);
@@ -65,6 +65,14 @@ TEST_CASE("DiskFileStore follows the FileStore contract and writes atomically") 
         store.write("vault.json", encoding::bytesOf("data"));
         REQUIRE_FALSE(std::filesystem::exists(root / "vault.json.tmp"));
         REQUIRE(std::filesystem::exists(root / "vault.json"));
+
+        /*
+         * Stopped after removing the old file, before renaming the new one (the path FAT
+         * takes): the finished .tmp is picked up.
+         */
+        std::filesystem::rename(root / "vault.json", root / "vault.json.tmp");
+        REQUIRE(encoding::textOf(*store.read("vault.json")) == "data");
+        REQUIRE_FALSE(std::filesystem::exists(root / "vault.json.tmp"));
     }
     std::filesystem::remove_all(root);
 }

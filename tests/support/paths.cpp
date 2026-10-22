@@ -5,10 +5,10 @@
 */
 namespace clientwarden::paths {
     std::filesystem::path dataDirectory() {
-        return std::filesystem::temp_directory_path() / "clientwarden-tests";
+        return std::filesystem::current_path() / "clientwarden-tests";
     }
 
     std::filesystem::path resourceDirectory() {
-        return std::filesystem::temp_directory_path() / "clientwarden-tests-resources";
+        return std::filesystem::current_path() / "clientwarden-tests-resources";
     }
 }

@@ -17,6 +17,18 @@ namespace clientwarden {
 
     std::optional<SecureBytes> DiskFileStore::read(std::filesystem::path file) {
         std::filesystem::path path = resolve_(std::move(file));
+
+        /*
+         * A write interrupted between removing the old file and renaming the new one into
+         * place (see write()) leaves only the finished .tmp.
+         */
+        std::filesystem::path tmp = path;
+        tmp += ".tmp";
+        std::error_code missing;
+        if (!std::filesystem::exists(path, missing) && std::filesystem::exists(tmp, missing)) {
+            std::filesystem::rename(tmp, path, missing);
+        }
+
         std::ifstream in(path, std::ios::binary);
         if (!in) {
             return std::nullopt;
@@ -52,6 +64,17 @@ namespace clientwarden {
             }
         }
         std::filesystem::rename(tmp, path, ec);
+        if (ec && std::filesystem::exists(path)) {
+            /*
+             * FAT (the Wii's SD card) can't rename over an existing file. The new contents are
+             * complete in .tmp, which read() recovers if we stop between these two steps.
+             */
+            ec.clear();
+            std::filesystem::remove(path, ec);
+            if (!ec) {
+                std::filesystem::rename(tmp, path, ec);
+            }
+        }
         if (ec) {
             throw VaultError("failed to replace file");
         }
