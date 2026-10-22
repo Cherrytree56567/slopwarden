@@ -44,3 +44,8 @@ if (ANDROID)
     target_compile_options(clientwarden_core PUBLIC -fexperimental-library)
     target_link_options(clientwarden_core PUBLIC -fexperimental-library)
 endif()
+
+# Windows 10 or later (cpp-httplib needs Windows 8+ APIs; MinGW defaults lower).
+if (WIN32)
+    target_compile_definitions(clientwarden_core PUBLIC _WIN32_WINNT=0x0A00 WINVER=0x0A00 NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()

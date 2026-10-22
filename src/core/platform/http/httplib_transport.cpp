@@ -1,4 +1,13 @@
 #define CPPHTTPLIB_EXPECT_100_THRESHOLD 0
+#if defined(_WIN32) && defined(__MINGW32__)
+/*
+ * MinGW's ws2tcpip.h lacks this declaration (its ws2_32 import library has the function),
+ * and cpp-httplib uses it to cancel slow DNS lookups.
+ */
+#include <winsock2.h>
+#include <ws2tcpip.h>
+extern "C" INT WSAAPI GetAddrInfoExCancel(LPHANDLE handle);
+#endif
 #include <httplib.h>
 
 #include <filesystem>

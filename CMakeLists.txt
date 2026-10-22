@@ -18,6 +18,8 @@ set(CW_VERSION 1.0.0)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# The core and keychain static libraries end up inside shared libraries (Android, Linux, Windows).
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 if (APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS deployment version")
 endif()
@@ -33,6 +35,10 @@ FetchContent_Declare(
 )
 
 FetchContent_MakeAvailable(keychain)
+# Its warnings shouldn't stop our build (keychain_win.cpp has an unused parameter under MinGW).
+if (NOT MSVC)
+    target_compile_options(keychain PRIVATE -Wno-error)
+endif()
 
 find_package(OpenSSL REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
@@ -63,15 +69,11 @@ else ()
     message(WARNING "Unknown platform: won't build UI")
 endif()
 
-if (WIN32)
-    configure_targets(clientwarden)
-endif()
-
 # The platform-independent vault core (src/core); see Wiki/Architecturev2.md.
 add_subdirectory(src/core)
 
 if (WIN32)
-    add_executable(clientwarden WIN32)
+    add_library(clientwarden SHARED)
 elseif (ANDROID)
     add_library(clientwarden SHARED)
 elseif (LINUX)
@@ -96,6 +98,3 @@ if (WIN32 OR APPLE OR LINUX OR ANDROID)
     buildUI(clientwarden)
 endif()
 
-if(MSVC)
-    target_compile_options(clientwarden PRIVATE /std:c++latest /GR- /EHa)
-endif()
