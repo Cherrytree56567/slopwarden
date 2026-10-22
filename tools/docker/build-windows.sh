@@ -5,6 +5,8 @@
 # Output: build/windows/app/{ClientWarden.exe,libclientwarden.dll}
 set -e
 OUT=/src/build/windows
+# The Conan cache is usually a mounted volume, which hides the image's profiles.
+conan profile detect --exist-ok >/dev/null
 conan install /src -of $OUT -pr:h /src/tools/docker/conan-windows-mingw -pr:b default --build=missing
 cmake -S /src -B $OUT -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_TOOLCHAIN_FILE=$OUT/build/Release/generators/conan_toolchain.cmake \
