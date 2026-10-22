@@ -44,6 +44,7 @@ import com.composables.icons.lucide.Check
 import com.composables.icons.lucide.Eye
 import com.composables.icons.lucide.EyeOff
 import com.composables.icons.lucide.Lucide
+import com.composables.icons.lucide.Copy
 import com.ct5.clientwarden.GenericItemData
 
 enum class FieldItemType {
@@ -162,6 +163,17 @@ class FieldItem(var data: FieldItemData, var editable: Boolean) {
                                 contentDescription = "Show"
                             )
                         }
+
+                        if (data.value.isNotEmpty()) {
+                            Spacer(modifier = Modifier.width(12.dp))
+
+                            IconButton(
+                                onClick = { GenericItem.cb_copy?.invoke(data.value, true) },
+                                modifier = Modifier.size(18.dp)
+                            ) {
+                                Icon(Lucide.Copy, contentDescription = "Copy")
+                            }
+                        }
                     }
                 } else if (data.type == FieldItemType.Checkbox) {
                     var m_value by remember { mutableStateOf(data.value) }
@@ -220,11 +232,23 @@ class FieldItem(var data: FieldItemData, var editable: Boolean) {
                     /*
                      * Text
                      */
-                    Text(
-                        data.value,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            data.value,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+
+                        if (data.value.isNotEmpty()) {
+                            IconButton(
+                                onClick = { GenericItem.cb_copy?.invoke(data.value, false) },
+                                modifier = Modifier.size(18.dp)
+                            ) {
+                                Icon(Lucide.Copy, contentDescription = "Copy")
+                            }
+                        }
+                    }
                 }
             } else {
                 if (data.type == FieldItemType.Checkbox) {
@@ -328,7 +352,8 @@ class FieldItem(var data: FieldItemData, var editable: Boolean) {
                     }
                 } else {
                     BasicTextView(data.value, { data.value = it },
-                        modifier = Modifier.fillMaxWidth())
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = if (data.type == FieldItemType.Hidden) c_secretKeyboard else c_plainKeyboard)
                 }
             }
         }

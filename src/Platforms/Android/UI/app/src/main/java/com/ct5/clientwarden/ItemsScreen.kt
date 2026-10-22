@@ -1,5 +1,14 @@
 package com.ct5.clientwarden
 
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import coil.compose.AsyncImage
+import java.io.File
+
 import android.content.res.Configuration
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.MutableTransitionState
@@ -90,92 +99,25 @@ import kotlin.math.floor
  * f_items = Filtered Items
  */
 object ItemsScreen {
-    var items = mutableListOf<ItemElement>()
-    var f_items = mutableListOf<ItemElement>(
-        ItemElement(
-            UUID.randomUUID(),
-            "Google",
-            ItemType.Login,
-            Lucide.Globe
-        ),
-        ItemElement(
-            UUID.randomUUID(),
-            "GitHub",
-            ItemType.Login,
-            Lucide.Globe
-        ),
-        ItemElement(
-            UUID.randomUUID(),
-            "Amazon",
-            ItemType.Login,
-            Lucide.Globe
-        ),
-        ItemElement(
-            UUID.randomUUID(),
-            "Netflix",
-            ItemType.Login,
-            Lucide.Globe
-        ),
-        ItemElement(
-            UUID.randomUUID(),
-            "Visa",
-            ItemType.Card,
-            Lucide.CreditCard
-        ),
-        ItemElement(
-            UUID.randomUUID(),
-            "Mastercard",
-            ItemType.Card,
-            Lucide.CreditCard
-        ),
-        ItemElement(
-            UUID.randomUUID(),
-            "American Express",
-            ItemType.Card,
-            Lucide.CreditCard
-        ),
-        ItemElement(
-            UUID.randomUUID(),
-            "Driver Licence",
-            ItemType.Identity,
-            Lucide.IdCard
-        ),
-        ItemElement(
-            UUID.randomUUID(),
-            "Passport",
-            ItemType.Identity,
-            Lucide.IdCard
-        ),
-        ItemElement(
-            UUID.randomUUID(),
-            "Personal Notes",
-            ItemType.Note,
-            Lucide.StickyNote
-        ),
-        ItemElement(
-            UUID.randomUUID(),
-            "Server Credentials",
-            ItemType.SSHKey,
-            Lucide.KeyRound
-        ),
-        ItemElement(
-            UUID.randomUUID(),
-            "Production Server",
-            ItemType.SSHKey,
-            Lucide.KeyRound
-        )
-    )
+    var f_items = mutableStateListOf<ItemElement>()
+    var loading by mutableStateOf(false)
 
+    /*
+     * cb_view opens an item (asking for the master password first if it needs re-prompt),
+     * cb_repromptView(id, password) checks the password and opens it
+     */
+    var cb_repromptView: ((String, String) -> Unit)? = null
+    var cb_view: ((ItemElement) -> Unit)? = null
 
-    var cb_repromptView: ((UUID, String) -> Boolean)? = null
-    var cb_view: ((UUID) -> Boolean)? = null
-
-    var rp_failure: String = ""
+    /*
+     * The item waiting for its master password re-prompt, if any
+     */
+    var rp_item by mutableStateOf<String?>(null)
+    var rp_failure by mutableStateOf("")
 
     fun SetItems(l_items: List<ItemElement>) {
-        items = mutableListOf<ItemElement>()
-        items.addAll(l_items)
-        f_items = items
+        f_items.clear()
+        f_items.addAll(l_items)
     }
 
     @Composable
@@ -185,7 +127,7 @@ object ItemsScreen {
          * A filled Button that has the top corners rounded, if its the start
          * or the bottom corners rouded, if its the end.
          */
-        FilledTonalButton(onClick = { cb_view?.invoke(item.uuid) },
+        FilledTonalButton(onClick = { cb_view?.invoke(item) },
             modifier = Modifier.fillMaxWidth()
                 .height(64.dp),
             shape = RoundedCornerShape(
@@ -210,11 +152,19 @@ object ItemsScreen {
                  * while everything else will have its own default
                  * material you icon
                  */
-                Icon(item.icon,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                    modifier = Modifier.size(20.dp)
-                )
+                if (item.iconPath != null) {
+                    AsyncImage(
+                        model = File(item.iconPath!!),
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp).clip(RoundedCornerShape(4.dp))
+                    )
+                } else {
+                    Icon(item.icon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
 
                 Spacer(Modifier.width(8.dp))
 
@@ -238,7 +188,7 @@ object ItemsScreen {
                      * Item Type
                      * Displays the Item Type
                      */
-                    Text(item.type.desc,
+                    Text(if (item.subtitle.isNotEmpty()) item.subtitle else item.type.desc,
                         color = MaterialTheme.colorScheme.onSecondaryContainer,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
@@ -314,7 +264,7 @@ object ItemsScreen {
                                             TextButton(
                                                 onClick = {
                                                     m_expanded = false
-                                                    TopBar.cb_restore?.invoke(item.uuid)
+                                                    TopBar.cb_restore?.invoke(item.id)
                                                 },
                                                 shape = RoundedCornerShape(
                                                     topStart = 8.dp,
@@ -337,7 +287,7 @@ object ItemsScreen {
                                             TextButton(
                                                 onClick = {
                                                     m_expanded = false
-                                                    TopBar.cb_delete?.invoke(item.uuid)
+                                                    TopBar.cb_delete?.invoke(item.id)
                                                 },
                                                 shape = RoundedCornerShape(
                                                     topStart = 8.dp,
@@ -360,7 +310,7 @@ object ItemsScreen {
                                             TextButton(
                                                 onClick = {
                                                     m_expanded = false
-                                                    TopBar.cb_unarchive?.invoke(item.uuid)
+                                                    TopBar.cb_unarchive?.invoke(item.id)
                                                 },
                                                 shape = RoundedCornerShape(
                                                     topStart = 8.dp,
@@ -383,7 +333,7 @@ object ItemsScreen {
                                             TextButton(
                                                 onClick = {
                                                     m_expanded = false
-                                                    TopBar.cb_bin?.invoke(item.uuid)
+                                                    TopBar.cb_bin?.invoke(item.id)
                                                 },
                                                 shape = RoundedCornerShape(
                                                     topStart = 0.dp,
@@ -407,7 +357,7 @@ object ItemsScreen {
                                             TextButton(
                                                 onClick = {
                                                     m_expanded = false
-                                                    TopBar.cb_bin?.invoke(item.uuid)
+                                                    TopBar.cb_bin?.invoke(item.id)
                                                 },
                                                 shape = RoundedCornerShape(
                                                     topStart = 8.dp,
@@ -430,7 +380,7 @@ object ItemsScreen {
                                             TextButton(
                                                 onClick = {
                                                     m_expanded = false
-                                                    TopBar.cb_archive?.invoke(item.uuid)
+                                                    TopBar.cb_archive?.invoke(item.id)
                                                 },
                                                 shape = RoundedCornerShape(
                                                     topStart = 0.dp,
@@ -471,29 +421,54 @@ object ItemsScreen {
 
     @Composable
     fun view() {
-        var rp_expanded by remember { mutableStateOf(false) }
         Column(
             modifier = Modifier.fillMaxWidth()
                                .padding(16.dp)
                                .clip(RoundedCornerShape(16.dp))
                                .verticalScroll(rememberScrollState())
         ) {
+            if (f_items.isEmpty()) {
+                Text(
+                    if (loading) "Loading…" else "No items",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth().padding(24.dp),
+                    textAlign = TextAlign.Center
+                )
+            }
+
             /*
              * Display all items and set Start if the
              * index is 0 and set End if it is the last Index
              */
             for ((i, item) in f_items.withIndex()) {
-                Item(item, start = i == 0, end = i == f_items.lastIndex)
+                key(item.id) {
+                    Item(item, start = i == 0, end = i == f_items.lastIndex)
+                }
             }
         }
 
-        if (rp_expanded) {
-            var password: String = ""
+        val pending = rp_item
+        if (pending != null) {
+            var password by remember { mutableStateOf("") }
             AlertDialog(
-                onDismissRequest = { rp_expanded = false }, title = { Text("Reprompt") },
+                onDismissRequest = {
+                    rp_item = null
+                    rp_failure = ""
+                },
+                title = { Text("Master Password") },
                 text = {
                     Column {
-                        BasicTextView(password, { password = it }, Modifier.fillMaxWidth())
+                        Text("This item is protected. Enter your master password to view it.",
+                            style = MaterialTheme.typography.bodySmall)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = password,
+                            onValueChange = { password = it },
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                         AnimatedVisibility(
                             visible = rp_failure != "",
                             enter = expandVertically() + fadeIn(),
@@ -501,21 +476,25 @@ object ItemsScreen {
                         ) {
                             Column {
                                 Spacer(modifier = Modifier.height(4.dp))
-                                Text(rp_failure)
+                                Text(rp_failure, color = MaterialTheme.colorScheme.error)
                             }
                         }
                     }
                 },
                 confirmButton = {
                     TextButton(onClick = {
-                        if (cb_repromptView?.invoke(DetailsScreen.uuid, password) == false) {
-                            rp_failure = "Invalid Password"
-                        } else {
-                            rp_expanded = false
-                        }
+                        cb_repromptView?.invoke(pending, password)
                         password = ""
                     }) {
                         Text("Done")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        rp_item = null
+                        rp_failure = ""
+                    }) {
+                        Text("Cancel")
                     }
                 }
             )

@@ -40,6 +40,7 @@ import androidx.navigation.compose.rememberNavController
 import com.composables.icons.lucide.House
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Settings
+import com.composables.icons.lucide.Send
 
 enum class NavTabs(
     val route: String,
@@ -48,6 +49,7 @@ enum class NavTabs(
     val contentDescription: String
 ) {
     HOME("home", "Home", Lucide.House, "Home"),
+    SEND("send", "Send", Lucide.Send, "Send"),
     SETTINGS("settings", "Settings", Lucide.Settings, "Settings")
 }
 
@@ -66,6 +68,7 @@ fun AppNavHost(
             composable(destination.route) {
                 when (destination) {
                     NavTabs.HOME -> HomeScreen.view()
+                    NavTabs.SEND -> SendScreen.view()
                     NavTabs.SETTINGS -> SettingsScreen.view()
                 }
             }
@@ -96,6 +99,9 @@ fun NavBar(navController: NavHostController, modifier: Modifier = Modifier) {
                         restoreState = true
                     }
                     TopBar.m_expanded = false
+                    if (navtab == NavTabs.SEND) {
+                        SendScreen.cb_reload?.invoke()
+                    }
                 },
                 icon = {
                     Icon(

@@ -1,5 +1,6 @@
 package com.ct5.clientwarden
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -25,8 +26,18 @@ enum class HomeScreenPanel {
 object HomeScreen {
     var c_panel = mutableStateOf(HomeScreenPanel.NavPanelLoading)
 
+    /*
+     * Leaving the details screen while editing throws the edit away
+     */
+    var cb_back: (() -> Unit)? = null
+
     @Composable
     fun view(modifier: Modifier = Modifier) {
+        BackHandler(enabled = c_panel.value == HomeScreenPanel.ItemsPanel ||
+            c_panel.value == HomeScreenPanel.DetailsScreen) {
+            cb_back?.invoke()
+        }
+
         Column(modifier = modifier.fillMaxSize()) {
             /*
              * Top Bar

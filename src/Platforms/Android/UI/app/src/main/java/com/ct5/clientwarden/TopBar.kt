@@ -44,6 +44,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.VerticalAlignmentLine
 import androidx.compose.ui.text.style.TextAlign
@@ -74,16 +77,27 @@ import com.composables.icons.lucide.X
 import java.util.UUID
 
 object TopBar {
-    var query: String = ""
+    var query by mutableStateOf("")
     var m_expanded by mutableStateOf(false)
+
+    /*
+     * Where the Add pill is, in window coordinates, so taps on it aren't treated as outside
+     */
+    var pillBounds: Rect? = null
+
+    /*
+     * Bank accounts, driver's licences and passports need a server that supports them
+     */
+    var extendedTypes by mutableStateOf(false)
     var cb_query: ((String) -> Unit)? = null
-    var cb_new: ((ItemType) -> Boolean)? = null
-    var cb_save: (() -> Boolean)? = null
-    var cb_bin: ((UUID) -> Boolean)? = null
-    var cb_delete: ((UUID) -> Boolean)? = null
-    var cb_restore: ((UUID) -> Boolean)? = null
-    var cb_archive: ((UUID) -> Boolean)? = null
-    var cb_unarchive: ((UUID) -> Boolean)? = null
+    var cb_new: ((ItemType) -> Unit)? = null
+    var cb_save: (() -> Unit)? = null
+    var cb_cancel: (() -> Unit)? = null
+    var cb_bin: ((String) -> Unit)? = null
+    var cb_delete: ((String) -> Unit)? = null
+    var cb_restore: ((String) -> Unit)? = null
+    var cb_archive: ((String) -> Unit)? = null
+    var cb_unarchive: ((String) -> Unit)? = null
 
     @Composable
     @OptIn(ExperimentalMaterial3Api::class)
@@ -96,8 +110,7 @@ object TopBar {
                 if (DetailsScreen.editable) {
                     FilledIconButton(
                         onClick = {
-                            DetailsScreen.releaseSnapshot()
-                            DetailsScreen.editable = false
+                            cb_cancel?.invoke()
                         },
                         modifier = Modifier.size(48.dp)
                     ) {
@@ -139,10 +152,14 @@ object TopBar {
 
                     Spacer(modifier = Modifier.weight(1f).fillMaxWidth())
 
-                    if (NavScreen.c_item == NavItem.Trash) {
+                    if (!DetailsScreen.canEdit) {
+                        /*
+                         * Read-only collection: nothing to change
+                         */
+                    } else if (DetailsScreen.deleted) {
                         FilledIconButton(
                             onClick = {
-                                cb_delete?.invoke(DetailsScreen.uuid)
+                                cb_delete?.invoke(DetailsScreen.id)
                             },
                             modifier = Modifier.height(48.dp)
                                 .width(48.dp)
@@ -158,7 +175,7 @@ object TopBar {
 
                         FilledIconButton(
                             onClick = {
-                                cb_restore?.invoke(DetailsScreen.uuid)
+                                cb_restore?.invoke(DetailsScreen.id)
                             },
                             modifier = Modifier.height(48.dp)
                                 .width(48.dp)
@@ -169,10 +186,10 @@ object TopBar {
                                 modifier = Modifier.size(20.dp)
                             )
                         }
-                    } else if (NavScreen.c_item == NavItem.Archived) {
+                    } else if (DetailsScreen.archived) {
                         FilledIconButton(
                             onClick = {
-                                cb_unarchive?.invoke(DetailsScreen.uuid)
+                                cb_unarchive?.invoke(DetailsScreen.id)
                             },
                             modifier = Modifier.height(48.dp)
                                 .width(48.dp)
@@ -188,7 +205,7 @@ object TopBar {
 
                         FilledIconButton(
                             onClick = {
-                                cb_bin?.invoke(DetailsScreen.uuid)
+                                cb_bin?.invoke(DetailsScreen.id)
                             },
                             modifier = Modifier.height(48.dp)
                                 .width(48.dp)
@@ -202,7 +219,7 @@ object TopBar {
                     } else {
                         FilledIconButton(
                             onClick = {
-                                cb_bin?.invoke(DetailsScreen.uuid)
+                                cb_bin?.invoke(DetailsScreen.id)
                             },
                             modifier = Modifier.height(48.dp)
                                 .width(48.dp)
@@ -218,7 +235,7 @@ object TopBar {
 
                         FilledIconButton(
                             onClick = {
-                                cb_archive?.invoke(DetailsScreen.uuid)
+                                cb_archive?.invoke(DetailsScreen.id)
                             },
                             modifier = Modifier.height(48.dp)
                                 .width(48.dp)
@@ -231,12 +248,11 @@ object TopBar {
                         }
                     }
 
-                    if (NavScreen.c_item != NavItem.Trash) {
+                    if (!DetailsScreen.deleted && DetailsScreen.canEdit) {
                         Spacer(modifier = Modifier.width(16.dp))
 
                         FilledIconButton(
                             onClick = {
-                                DetailsScreen.takeSnapshot()
                                 DetailsScreen.editable = true
                             },
                             modifier = Modifier.height(48.dp)
@@ -258,7 +274,10 @@ object TopBar {
             ) {
                 TextField(
                     value = query,
-                    onValueChange = { newValue -> cb_query?.invoke(newValue) },
+                    onValueChange = { newValue ->
+                        query = newValue
+                        cb_query?.invoke(newValue)
+                    },
                     modifier = Modifier.weight(1f),
                     placeholder = {
                         Text("Search")
@@ -286,7 +305,8 @@ object TopBar {
                     modifier = Modifier
                         .height(48.dp)
                         .wrapContentWidth()
-                        .animateContentSize(animationSpec = tween(0)),
+                        .animateContentSize(animationSpec = tween(0))
+                        .onGloballyPositioned { pillBounds = it.boundsInWindow() },
                     shape = RoundedCornerShape(24.dp),
                     color = MaterialTheme.colorScheme.primary,
                     onClick = { if (!m_expanded) m_expanded = true }
@@ -391,6 +411,25 @@ object TopBar {
                                         tint = MaterialTheme.colorScheme.onPrimary,
                                         modifier = Modifier.size(18.dp)
                                     )
+                                }
+
+                                if (extendedTypes) {
+                                    for (type in listOf(ItemType.BankAccount, ItemType.DriversLicense, ItemType.Passport)) {
+                                        IconButton(
+                                            onClick = {
+                                                m_expanded = false
+                                                cb_new?.invoke(type)
+                                            },
+                                            modifier = Modifier.size(36.dp)
+                                        ) {
+                                            Icon(
+                                                type.icon,
+                                                contentDescription = type.desc,
+                                                tint = MaterialTheme.colorScheme.onPrimary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }

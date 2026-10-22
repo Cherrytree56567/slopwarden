@@ -1,5 +1,16 @@
 package com.ct5.clientwarden
 
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
+import androidx.compose.runtime.key
+import androidx.compose.ui.draw.scale
+import com.composables.icons.lucide.Building2
+import com.composables.icons.lucide.Copy
+import com.composables.icons.lucide.Paperclip
+import com.composables.icons.lucide.Share2
+import com.composables.icons.lucide.X
+
 import android.content.res.Configuration
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -97,74 +108,73 @@ import java.util.UUID
 import kotlin.time.Duration.Companion.milliseconds
 
 object DetailsScreen {
-    var cb_removeAttachment: ((String) -> Boolean)? = null
-    var cb_downloadAttachment: ((String) -> Boolean)? = null
-    var cb_favorite: ((Boolean) -> Boolean)? = null
-    var cb_folder: ((UUID) -> Boolean)? = null
+    var cb_removeAttachment: ((String) -> Unit)? = null
+    var cb_downloadAttachment: ((String) -> Unit)? = null
+    var cb_addAttachment: (() -> Unit)? = null
+    var cb_favorite: ((Boolean) -> Unit)? = null
+    var cb_folder: ((String) -> Unit)? = null
+
+    /*
+     * cb_share(organizationId, collectionIds) moves a personal item into an organisation,
+     * cb_setCollections(collectionIds) changes an organisation item's collections
+     */
+    var cb_share: ((String, List<String>) -> Unit)? = null
+    var cb_setCollections: ((List<String>) -> Unit)? = null
+    var cb_duplicate: (() -> Unit)? = null
 
     var name by mutableStateOf("")
 
-    var uuid by mutableStateOf(UUID(0L, 0L))
-    var folderUUID by mutableStateOf(UUID(0L, 0L))
+    /*
+     * id "" is a new item that hasn't been saved yet
+     */
+    var id by mutableStateOf("")
+    var folderId by mutableStateOf("")
     var type by mutableStateOf(ItemType.Login)
     var icon by mutableStateOf<ClientwardenImage>(ClientwardenImage.ImageIcon(Lucide.Globe))
     var editable by mutableStateOf(false)
     var favorite by mutableStateOf(false)
+    var reprompt by mutableStateOf(false)
+    var canEdit by mutableStateOf(true)
+    var deleted by mutableStateOf(false)
+    var archived by mutableStateOf(false)
+    var organizationId by mutableStateOf<String?>(null)
+    var collectionIds = mutableStateListOf<String>()
 
     var itemHistory = mutableStateListOf<String>()
-    var passwordHistory = mutableStateListOf<PasswordHistoryItem>(
-        PasswordHistoryItem("dat", "pw@@"),
-        PasswordHistoryItem("d3at", "pw@@"),
-        PasswordHistoryItem("d4at", "pw@@"),
-        PasswordHistoryItem("da5t", "pw@@"),
-        PasswordHistoryItem("da6t", "pw@@"),
-        PasswordHistoryItem("daft", "pw@@"),
-        PasswordHistoryItem("daydt", "pw@@"),
-        PasswordHistoryItem("dat", "pw@@"),
-        PasswordHistoryItem("dat", "pw@@")
-    )
-    var notes: String = ""
+    var passwordHistory = mutableStateListOf<PasswordHistoryItem>()
+    var notesData by mutableStateOf(GenericItemData("Notes", "", GenericItemType.ML_Generic))
 
     var genericItems = mutableStateListOf<GenericItemData>()
     var fieldItems = mutableStateListOf<FieldItemData>()
     var attachmentItems = mutableStateListOf<AttachmentItemData>()
 
-    var s_name: String = ""
-    var s_favorite: Boolean = false
-    var s_folderUUID: UUID = UUID(0L, 0L)
-    var s_notes: String = ""
-    var s_genericItems = mutableStateListOf<GenericItemData>()
-    var s_fieldItems = mutableStateListOf<FieldItemData>()
-    var s_attachmentItems = mutableStateListOf<AttachmentItemData>()
-
-    fun takeSnapshot() {
-        DetailsScreen.s_name = DetailsScreen.name
-        DetailsScreen.s_favorite = DetailsScreen.favorite
-        DetailsScreen.s_folderUUID = DetailsScreen.folderUUID
-        DetailsScreen.s_notes = DetailsScreen.notes
-        DetailsScreen.s_genericItems = DetailsScreen.genericItems
-        DetailsScreen.s_fieldItems = DetailsScreen.fieldItems
-        DetailsScreen.s_attachmentItems = DetailsScreen.attachmentItems
-    }
-
-    fun releaseSnapshot() {
-        DetailsScreen.name = DetailsScreen.s_name
-        DetailsScreen.favorite = DetailsScreen.s_favorite
-        DetailsScreen.folderUUID = DetailsScreen.s_folderUUID
-        DetailsScreen.notes = DetailsScreen.s_notes
-        DetailsScreen.genericItems = DetailsScreen.s_genericItems
-        DetailsScreen.fieldItems = DetailsScreen.s_fieldItems
-        DetailsScreen.attachmentItems = DetailsScreen.s_attachmentItems
+    fun clear() {
+        id = ""
+        name = ""
+        folderId = ""
+        editable = false
+        favorite = false
+        reprompt = false
+        canEdit = true
+        deleted = false
+        archived = false
+        organizationId = null
+        collectionIds.clear()
+        itemHistory.clear()
+        passwordHistory.clear()
+        notesData = GenericItemData("Notes", "", GenericItemType.ML_Generic)
+        genericItems.clear()
+        fieldItems.clear()
+        attachmentItems.clear()
     }
 
     @Composable
     fun folderButton(e_change: (Boolean) -> Unit, option: ClientwardenFolder) {
         TextButton(
             onClick = {
-                if (cb_folder?.invoke(option.uuid) == true) {
-                    folderUUID = option.uuid
-                    e_change(false)
-                }
+                folderId = option.id
+                cb_folder?.invoke(option.id)
+                e_change(false)
             },
             modifier = Modifier.fillMaxWidth(),
             shape = RectangleShape
@@ -193,6 +203,9 @@ object DetailsScreen {
     fun view() {
         var f_expanded by remember { mutableStateOf(false) }
         var pw_expanded by remember { mutableStateOf(false) }
+        var s_expanded by remember { mutableStateOf(false) }
+        var c_expanded by remember { mutableStateOf(false) }
+        val l_org = NavScreen.organizations.firstOrNull { it.id == organizationId }
 
         Column(modifier = Modifier.fillMaxSize()
             .verticalScroll(rememberScrollState())
@@ -255,9 +268,8 @@ object DetailsScreen {
                          */
                         Button(
                             onClick = {
-                                if (cb_favorite?.invoke(!favorite) == true) {
-                                    favorite = !favorite
-                                }
+                                favorite = !favorite
+                                cb_favorite?.invoke(favorite)
                             },
                             modifier = Modifier.size(42.dp),
                             colors = ButtonDefaults.buttonColors(
@@ -306,8 +318,8 @@ object DetailsScreen {
                                     )
                                     Spacer(modifier = Modifier.size(ButtonDefaults.IconSpacing))
 
-                                    val l_folder = NavScreen.folders.firstOrNull { it.uuid == folderUUID }
-                                        ?: ClientwardenFolder(uuid = UUID(0L, 0L), name = "No Folder")
+                                    val l_folder = NavScreen.folders.firstOrNull { it.id == folderId }
+                                        ?: ClientwardenFolder(id = "", name = "No Folder")
 
                                     Text(
                                         l_folder.name
@@ -341,7 +353,7 @@ object DetailsScreen {
                     ) {
                         Column(modifier = Modifier.heightIn(max = 200.dp)
                             .verticalScroll(rememberScrollState())) {
-                            folderButton(e_change = { f_expanded = it }, ClientwardenFolder(uuid = UUID(0L, 0L), name = "No Folder"))
+                            folderButton(e_change = { f_expanded = it }, ClientwardenFolder(id = "", name = "No Folder"))
 
                             NavScreen.folders.forEach { option ->
                                 folderButton(e_change = { f_expanded = it }, option)
@@ -357,52 +369,157 @@ object DetailsScreen {
 
             Spacer(modifier = Modifier.padding(vertical = 8.dp))
 
+            /*
+             * Organisation row: which organisation and collections the item lives in, and
+             * sharing personal items into one
+             */
+            if (l_org != null) {
+                val l_names = l_org.collections.filter { it.id in collectionIds }.joinToString { it.name }
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                        .padding(12.dp)) {
+                    Icon(Lucide.Building2, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(l_org.name)
+                        if (l_names.isNotEmpty()) {
+                            Text(l_names, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    if (canEdit && !deleted && id.isNotEmpty()) {
+                        TextButton(onClick = { c_expanded = true }) { Text("Collections") }
+                    }
+                }
+
+                Spacer(modifier = Modifier.padding(vertical = 8.dp))
+            } else if (id.isNotEmpty() && !deleted && !editable &&
+                NavScreen.organizations.any { it.enabled && it.keyAvailable }) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = { cb_duplicate?.invoke() }) {
+                        Text("Duplicate")
+                    }
+                    TextButton(onClick = { s_expanded = true }) {
+                        Icon(Lucide.Share2, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Move to organisation")
+                    }
+                }
+
+                Spacer(modifier = Modifier.padding(vertical = 4.dp))
+            } else if (id.isNotEmpty() && !deleted && !editable) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = { cb_duplicate?.invoke() }) {
+                        Text("Duplicate")
+                    }
+                }
+            }
+
             for (genericItem in genericItems) {
-                AnimatedContent(
-                    targetState = editable,
-                    transitionSpec = {
-                        fadeIn(tween(200, delayMillis = 80)) togetherWith fadeOut(tween(80))
-                    },
-                    label = "genericItemEditable"
-                ) { i_editable ->
-                    GenericItem(genericItem, i_editable).view()
+                /*
+                 * Empty fields only clutter the view (identities have 18 of them)
+                 */
+                if (!editable && genericItem.value.isEmpty()) {
+                    continue
+                }
+
+                key(System.identityHashCode(genericItem)) {
+                    AnimatedContent(
+                        targetState = editable,
+                        transitionSpec = {
+                            fadeIn(tween(200, delayMillis = 80)) togetherWith fadeOut(tween(80))
+                        },
+                        label = "genericItemEditable"
+                    ) { i_editable ->
+                        GenericItem(genericItem, i_editable && genericItem.key.isNotEmpty()).view()
+                    }
                 }
 
                 Spacer(modifier = Modifier.padding(vertical = 8.dp))
             }
 
-            AnimatedContent(
-                targetState = editable,
-                transitionSpec = {
-                    fadeIn(tween(200, delayMillis = 80)) togetherWith fadeOut(tween(80))
-                },
-                label = "genericItemNotesEditable"
-            ) { i_editable ->
-                GenericItem(GenericItemData("Notes", notes,
-                    GenericItemType.ML_Generic), i_editable).view()
+            if (editable || notesData.value.isNotEmpty()) {
+                AnimatedContent(
+                    targetState = editable,
+                    transitionSpec = {
+                        fadeIn(tween(200, delayMillis = 80)) togetherWith fadeOut(tween(80))
+                    },
+                    label = "genericItemNotesEditable"
+                ) { i_editable ->
+                    GenericItem(notesData, i_editable).view()
+                }
+
+                Spacer(modifier = Modifier.padding(vertical = 8.dp))
             }
 
-            Spacer(modifier = Modifier.padding(vertical = 8.dp))
+            if (editable) {
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                        .padding(horizontal = 12.dp)) {
+                    Text("Master password re-prompt", modifier = Modifier.weight(1f))
+                    Switch(checked = reprompt, onCheckedChange = { reprompt = it },
+                        modifier = Modifier.scale(0.75f))
+                }
+
+                Spacer(modifier = Modifier.padding(vertical = 8.dp))
+            }
 
             HorizontalDivider()
 
             Spacer(modifier = Modifier.padding(vertical = 8.dp))
 
             for (fieldItem in fieldItems) {
-                AnimatedContent(
-                    targetState = editable,
-                    transitionSpec = {
-                        fadeIn(tween(200, delayMillis = 80)) togetherWith fadeOut(tween(80))
-                    },
-                    label = "genericItemEditable"
-                ) { i_editable ->
-                    FieldItem(fieldItem, i_editable).view()
+                key(System.identityHashCode(fieldItem)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(modifier = Modifier.weight(1f)) {
+                            AnimatedContent(
+                                targetState = editable,
+                                transitionSpec = {
+                                    fadeIn(tween(200, delayMillis = 80)) togetherWith fadeOut(tween(80))
+                                },
+                                label = "fieldItemEditable"
+                            ) { i_editable ->
+                                FieldItem(fieldItem, i_editable).view()
+                            }
+                        }
+
+                        if (editable) {
+                            IconButton(onClick = { fieldItems.removeAll { it === fieldItem } }) {
+                                Icon(Lucide.X, contentDescription = "Remove field",
+                                    modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
                 }
 
                 Spacer(modifier = Modifier.padding(vertical = 8.dp))
             }
 
-            if (fieldItems.isNotEmpty()) {
+            if (editable) {
+                Row {
+                    for ((l_type, l_label) in listOf(FieldItemType.Text to "Text", FieldItemType.Hidden to "Hidden",
+                        FieldItemType.Checkbox to "Checkbox", FieldItemType.Linked to "Linked")) {
+                        if (l_type == FieldItemType.Linked &&
+                            type != ItemType.Login && type != ItemType.Card && type != ItemType.Identity) {
+                            continue
+                        }
+                        TextButton(onClick = {
+                            fieldItems.add(FieldItemData(if (l_type == FieldItemType.Checkbox) "New field" else "",
+                                if (l_type == FieldItemType.Checkbox) "false" else "", l_type, type))
+                        }) {
+                            Text("+ $l_label")
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.padding(vertical = 8.dp))
+            }
+
+            if (fieldItems.isNotEmpty() || editable) {
                 HorizontalDivider()
 
                 Spacer(modifier = Modifier.padding(vertical = 8.dp))
@@ -414,12 +531,22 @@ object DetailsScreen {
                     transitionSpec = {
                         fadeIn(tween(200, delayMillis = 80)) togetherWith fadeOut(tween(80))
                     },
-                    label = "genericItemEditable"
+                    label = "attachmentItemEditable"
                 ) { i_editable ->
                     AttachmentItem(attachmentItems, i_editable).view()
                 }
 
                 Spacer(modifier = Modifier.padding(vertical = 8.dp))
+            }
+
+            if (id.isNotEmpty() && !editable && !deleted && canEdit) {
+                TextButton(onClick = { cb_addAttachment?.invoke() }) {
+                    Icon(Lucide.Paperclip, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Add attachment")
+                }
+
+                Spacer(modifier = Modifier.padding(vertical = 4.dp))
             }
 
             if (attachmentItems.isNotEmpty()) {
@@ -433,12 +560,14 @@ object DetailsScreen {
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
-            Text("View Password History", style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.clickable {
-                    pw_expanded = true
-                }
-            )
+            if (passwordHistory.isNotEmpty()) {
+                Text("View Password History", style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 4.dp).clickable {
+                        pw_expanded = true
+                    }
+                )
+            }
         }
 
         if (pw_expanded) {
@@ -479,12 +608,21 @@ object DetailsScreen {
                                 /*
                                  * Password
                                  */
-                                Text(
-                                    pwHist.password,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace)
-                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        pwHist.password,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    IconButton(
+                                        onClick = { GenericItem.cb_copy?.invoke(pwHist.password, true) },
+                                        modifier = Modifier.size(18.dp)
+                                    ) {
+                                        Icon(Lucide.Copy, contentDescription = "Copy")
+                                    }
+                                }
                             }
 
                             Spacer(modifier = Modifier.padding(vertical = 8.dp))
@@ -498,6 +636,100 @@ object DetailsScreen {
                 }
             )
         }
+
+        if (s_expanded) {
+            CollectionPicker(
+                title = "Move to organisation",
+                organizations = NavScreen.organizations.filter { it.enabled && it.keyAvailable },
+                initialOrganization = null,
+                initialCollections = emptyList(),
+                onDismiss = { s_expanded = false },
+                onConfirm = { org, collections ->
+                    s_expanded = false
+                    cb_share?.invoke(org, collections)
+                }
+            )
+        }
+
+        if (c_expanded && l_org != null) {
+            CollectionPicker(
+                title = "Collections",
+                organizations = listOf(l_org),
+                initialOrganization = l_org.id,
+                initialCollections = collectionIds.toList(),
+                onDismiss = { c_expanded = false },
+                onConfirm = { _, collections ->
+                    c_expanded = false
+                    cb_setCollections?.invoke(collections)
+                }
+            )
+        }
+    }
+
+    /*
+     * Picks an organisation (if there's more than one) and the writable collections in it.
+     * Organisation items must be in at least one collection.
+     */
+    @Composable
+    fun CollectionPicker(title: String, organizations: List<VaultOrganization>, initialOrganization: String?,
+                         initialCollections: List<String>, onDismiss: () -> Unit,
+                         onConfirm: (String, List<String>) -> Unit) {
+        var l_org by remember { mutableStateOf(initialOrganization ?: organizations.firstOrNull()?.id ?: "") }
+        val l_selected = remember { mutableStateListOf<String>().apply { addAll(initialCollections) } }
+
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text(title) },
+            text = {
+                Column(modifier = Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
+                    if (organizations.size > 1) {
+                        for (org in organizations) {
+                            Row(verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth().clickable {
+                                    l_org = org.id
+                                    l_selected.clear()
+                                }) {
+                                RadioButton(selected = l_org == org.id, onClick = {
+                                    l_org = org.id
+                                    l_selected.clear()
+                                })
+                                Text(org.name)
+                            }
+                        }
+
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                    }
+
+                    val l_collections = organizations.firstOrNull { it.id == l_org }?.collections
+                        ?.filter { !it.readOnly } ?: emptyList()
+                    if (l_collections.isEmpty()) {
+                        Text("You can't add items to any collection in this organisation.",
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                    for (collection in l_collections) {
+                        Row(verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                if (collection.id in l_selected) l_selected.remove(collection.id)
+                                else l_selected.add(collection.id)
+                            }) {
+                            Checkbox(checked = collection.id in l_selected, onCheckedChange = {
+                                if (it) l_selected.add(collection.id) else l_selected.remove(collection.id)
+                            })
+                            Text(collection.name)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = l_org.isNotEmpty() && l_selected.isNotEmpty(),
+                    onClick = { onConfirm(l_org, l_selected.toList()) }) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        )
     }
 }
 

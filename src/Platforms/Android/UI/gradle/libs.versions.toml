@@ -16,6 +16,8 @@ foundationLayout = "1.12.0"
 ui = "1.12.0"
 animation = "1.12.0"
 foundation = "1.12.0"
+biometric = "1.1.0"
+fragmentKtx = "1.8.9"
 
 [libraries]
 androidx-compose-material-icons-extended = { module = "androidx.compose.material:material-icons-extended", version.ref = "materialIconsExtended" }
@@ -40,6 +42,8 @@ androidx-compose-foundation-layout = { group = "androidx.compose.foundation", na
 androidx-ui = { group = "androidx.compose.ui", name = "ui", version.ref = "ui" }
 androidx-compose-animation = { group = "androidx.compose.animation", name = "animation", version.ref = "animation" }
 androidx-compose-foundation = { group = "androidx.compose.foundation", name = "foundation", version.ref = "foundation" }
+androidx-biometric = { group = "androidx.biometric", name = "biometric", version.ref = "biometric" }
+androidx-fragment-ktx = { group = "androidx.fragment", name = "fragment-ktx", version.ref = "fragmentKtx" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

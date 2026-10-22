@@ -25,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
@@ -151,8 +152,14 @@ object LoginScreen {
     }
 
     //              Email   Passwd  Vault   Main    API     Icon    WSS
-    var cb_login: ((String, String, String, String, String, String, String) -> Boolean)? = null
-    var cb_loginCode: ((String) -> Boolean)? = null
+    var cb_login: ((String, String, String, String, String, String, String) -> Unit)? = null
+    var cb_loginCode: ((String) -> Unit)? = null
+    var cb_cancel: (() -> Unit)? = null
+
+    /*
+     * A login request is in flight
+     */
+    var busy = mutableStateOf(false)
 
     fun setScreenType(ordinal: Int) {
         s_type.value = LoginScreenType.entries[ordinal]
@@ -222,28 +229,20 @@ object LoginScreen {
             } else if (s_type.value == LoginScreenType.Passkey) {
                 Spacer(modifier = Modifier.height(12.dp))
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    FilledIconButton(
-                        onClick = {
-                            /*
-                             * TODO: Passkey Support
-                             */
-                        }
-                    ) {
-                        Icon(Lucide.KeyRound,
-                            contentDescription = "Passkey")
-                    }
+                Text(
+                    "This account uses a passkey for two-step login, which Clientwarden can't " +
+                        "do on Android yet. Use another two-step method, or log in from a computer.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
 
-                    Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
-                    Button(
-                        onClick = {
-
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Cancel")
-                    }
+                Button(
+                    onClick = { cb_cancel?.invoke() },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Cancel")
                 }
             }
 
@@ -253,9 +252,7 @@ object LoginScreen {
                 Button(
                     onClick = {
                         if (s_type.value == LoginScreenType.Generic) {
-                            if (cb_login?.invoke(email.value, password.value, vaultURL.value, mainURL.value, apiURL.value, iconURL.value, wssURL.value) == true) {
-                                email.value = ""
-                            }
+                            cb_login?.invoke(email.value, password.value, vaultURL.value, mainURL.value, apiURL.value, iconURL.value, wssURL.value)
                             password.value = ""
                         } else if (s_type.value == LoginScreenType.TOTP ||
                             s_type.value == LoginScreenType.DeviceVerify) {
@@ -263,9 +260,20 @@ object LoginScreen {
                             code.value = ""
                         }
                     },
+                    enabled = !busy.value,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Log In")
+                    if (busy.value) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("Log In")
+                    }
+                }
+
+                if (s_type.value != LoginScreenType.Generic) {
+                    TextButton(onClick = { cb_cancel?.invoke() }) {
+                        Text("Cancel")
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))

@@ -1,5 +1,7 @@
 package com.ct5.clientwarden
 
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,20 +35,100 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
-import java.util.UUID
+import com.composables.icons.lucide.BookUser
+import com.composables.icons.lucide.Car
+import com.composables.icons.lucide.CreditCard
+import com.composables.icons.lucide.Globe
+import com.composables.icons.lucide.IdCard
+import com.composables.icons.lucide.KeyRound
+import com.composables.icons.lucide.Landmark
+import com.composables.icons.lucide.Lucide
+import com.composables.icons.lucide.StickyNote
 import kotlin.time.Duration.Companion.milliseconds
 
-enum class ItemType(val desc: String) {
-    Login("Login"),
-    Card("Card"),
-    Identity("Identity"),
-    Note("Note"),
-    SSHKey("SSH Key")
+/*
+ * key is the name the core's JSON bridge uses for the type
+ */
+enum class ItemType(val desc: String, val key: String) {
+    Login("Login", "login"),
+    Card("Card", "card"),
+    Identity("Identity", "identity"),
+    Note("Note", "note"),
+    SSHKey("SSH Key", "sshKey"),
+    BankAccount("Bank Account", "bankAccount"),
+    DriversLicense("Driver's Licence", "driversLicense"),
+    Passport("Passport", "passport");
+
+    val icon: ImageVector
+        get() = when (this) {
+            Login -> Lucide.Globe
+            Card -> Lucide.CreditCard
+            Identity -> Lucide.IdCard
+            Note -> Lucide.StickyNote
+            SSHKey -> Lucide.KeyRound
+            BankAccount -> Lucide.Landmark
+            DriversLicense -> Lucide.Car
+            Passport -> Lucide.BookUser
+        }
+
+    companion object {
+        fun fromKey(key: String): ItemType = entries.firstOrNull { it.key == key } ?: Note
+    }
 }
 
-data class ClientwardenFolder(val uuid: UUID, var name: String)
-data class ItemElement(val uuid: UUID, var name: String, var type: ItemType, var icon: ImageVector)
+/*
+ * id "" is "No Folder"
+ */
+data class ClientwardenFolder(val id: String, var name: String)
+
+/*
+ * iconPath is a cached website icon on disk, if the core has one
+ */
+data class ItemElement(
+    val id: String,
+    var name: String,
+    var type: ItemType,
+    var icon: ImageVector,
+    var subtitle: String = "",
+    var iconPath: String? = null,
+    var reprompt: Boolean = false,
+    var favorite: Boolean = false,
+    var organizationId: String? = null
+)
 data class PasswordHistoryItem(val date: String, var password: String)
+
+data class VaultCollection(
+    val id: String,
+    val organizationId: String,
+    val name: String,
+    val readOnly: Boolean,
+    val hidePasswords: Boolean,
+    val manage: Boolean
+)
+
+data class VaultOrganization(
+    val id: String,
+    val name: String,
+    val role: Int,
+    val enabled: Boolean,
+    val canManageCollections: Boolean,
+    val keyAvailable: Boolean,
+    val collections: List<VaultCollection>
+)
+
+/*
+ * Secrets: no suggestions, autocorrect or learning from what's typed
+ */
+val c_secretKeyboard = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false,
+    capitalization = KeyboardCapitalization.None)
+
+/*
+ * Usernames, codes and the like: typed as-is
+ */
+val c_plainKeyboard = KeyboardOptions(autoCorrectEnabled = false, capitalization = KeyboardCapitalization.None)
+
+val c_urlKeyboard = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false,
+    capitalization = KeyboardCapitalization.None)
 
 /*
  * We are using our own BasicTextView here because
@@ -54,7 +137,8 @@ data class PasswordHistoryItem(val date: String, var password: String)
  */
 @Composable
 fun BasicTextView(data: String, cb_data: (String) -> Unit, modifier: Modifier = Modifier, multiLine: Boolean = false,
-                  textStyle: TextStyle = MaterialTheme.typography.bodyMedium) {
+                  textStyle: TextStyle = MaterialTheme.typography.bodyMedium,
+                  keyboardOptions: KeyboardOptions = KeyboardOptions.Default) {
     var m_data by remember(data) { mutableStateOf(data) }
     BasicTextField(
         value = m_data,
@@ -73,6 +157,7 @@ fun BasicTextView(data: String, cb_data: (String) -> Unit, modifier: Modifier = 
             )
             .padding(horizontal = 14.dp, vertical = 6.dp),
         singleLine = !multiLine,
+        keyboardOptions = keyboardOptions,
         textStyle = textStyle.copy(
             color = MaterialTheme.colorScheme.onSurface
         ),

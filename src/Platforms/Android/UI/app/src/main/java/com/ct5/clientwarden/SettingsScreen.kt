@@ -1,5 +1,20 @@
 package com.ct5.clientwarden
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Slider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.text.font.FontFamily
+import com.composables.icons.lucide.Copy
+import com.composables.icons.lucide.Dices
+import com.composables.icons.lucide.RefreshCw
+
 import android.content.res.Configuration
 import android.widget.Space
 import androidx.compose.animation.core.MutableTransitionState
@@ -99,11 +114,61 @@ import kotlinx.coroutines.launch
 enum class SettingsSelection {
     Security,
     AutoFill,
+    Generator,
     About,
     NONE
 }
+
 object SettingsScreen {
     var c_item = mutableStateOf(SettingsSelection.NONE)
+
+    var email = mutableStateOf("")
+    var biometrics = mutableStateOf(false)
+    var autoLockSeconds = mutableStateOf(300)
+    var timeoutAction = mutableStateOf("lock")
+    var clipboardSeconds = mutableStateOf(30)
+    var allowScreenshots = mutableStateOf(false)
+    var autofillEnabled = mutableStateOf(false)
+
+    /*
+     * cb_set(key, value) changes one of the core's settings (settings.set)
+     */
+    var cb_set: ((String, Any) -> Unit)? = null
+    var cb_biometrics: ((Boolean) -> Unit)? = null
+    var cb_lock: (() -> Unit)? = null
+    var cb_logout: (() -> Unit)? = null
+    var cb_sync: (() -> Unit)? = null
+    var cb_autofill: (() -> Unit)? = null
+
+    /*
+     * cb_generate(kind, options) with kind password, passphrase or pin
+     */
+    var cb_generate: (suspend (String, Map<String, Any>) -> String?)? = null
+
+    private val c_timeouts = listOf(
+        5 to "Immediately",
+        60 to "1 minute",
+        300 to "5 minutes",
+        900 to "15 minutes",
+        1800 to "30 minutes",
+        3600 to "1 hour",
+        14400 to "4 hours",
+        86400 to "1 day",
+        604800 to "7 days"
+    )
+
+    private val c_clipboard = listOf(
+        10 to "10 seconds",
+        20 to "20 seconds",
+        30 to "30 seconds",
+        60 to "1 minute",
+        120 to "2 minutes",
+        300 to "5 minutes"
+    )
+
+    private fun label(options: List<Pair<Int, String>>, value: Int): String {
+        return options.firstOrNull { it.first == value }?.second ?: "$value seconds"
+    }
 
     @Composable
     fun SettingButton(text: String, icon: ImageVector = Lucide.AArrowDown, onClick: () -> Unit = {},
@@ -161,12 +226,12 @@ object SettingsScreen {
     }
 
     @Composable
-    fun SettingsSwitch(text: String, onClick: () -> Unit = {},
+    fun SettingsSwitch(text: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit,
                       start: Boolean = false, end: Boolean = false) {
         /*
          * A Mat You Button with a custom BG Color
          */
-        FilledTonalButton(onClick = { },
+        FilledTonalButton(onClick = { onCheckedChange(!checked) },
             modifier = Modifier.fillMaxWidth()
                 .height(52.dp)
                 .drawWithContent {
@@ -198,11 +263,9 @@ object SettingsScreen {
 
                 Spacer(Modifier.weight(1f).fillMaxWidth())
 
-                var checked by remember { mutableStateOf(false) }
-
                 Switch(
                     checked = checked,
-                    onCheckedChange = { checked = it },
+                    onCheckedChange = { onCheckedChange(it) },
                     modifier = Modifier.scale(0.75f)
                 )
 
@@ -306,6 +369,84 @@ object SettingsScreen {
     }
 
     @Composable
+    fun GeneratorView() {
+        var l_kind by remember { mutableStateOf("password") }
+        var l_length by remember { mutableStateOf(20f) }
+        var l_words by remember { mutableStateOf(5f) }
+        var l_digits by remember { mutableStateOf(6f) }
+        var l_upper by remember { mutableStateOf(true) }
+        var l_numbers by remember { mutableStateOf(true) }
+        var l_symbols by remember { mutableStateOf(true) }
+        var l_capitalize by remember { mutableStateOf(true) }
+        var l_result by remember { mutableStateOf("") }
+        var l_nonce by remember { mutableStateOf(0) }
+
+        LaunchedEffect(l_kind, l_length.toInt(), l_words.toInt(), l_digits.toInt(), l_upper, l_numbers,
+            l_symbols, l_capitalize, l_nonce) {
+            val l_options: Map<String, Any> = when (l_kind) {
+                "passphrase" -> mapOf("words" to l_words.toInt(), "capitalize" to l_capitalize)
+                "pin" -> mapOf("digits" to l_digits.toInt())
+                else -> mapOf("length" to l_length.toInt(), "uppercase" to l_upper,
+                    "numbers" to l_numbers, "symbols" to l_symbols)
+            }
+            l_result = cb_generate?.invoke(l_kind, l_options) ?: ""
+        }
+
+        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                val l_kinds = listOf("password" to "Password", "passphrase" to "Passphrase", "pin" to "PIN")
+                l_kinds.forEachIndexed { i, (kind, text) ->
+                    SegmentedButton(
+                        selected = l_kind == kind,
+                        onClick = { l_kind = kind },
+                        shape = SegmentedButtonDefaults.itemShape(index = i, count = l_kinds.size)
+                    ) {
+                        Text(text)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                    .padding(12.dp)) {
+                Text(l_result, modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyLarge.copy(fontFamily = FontFamily.Monospace))
+                IconButton(onClick = { l_nonce++ }) {
+                    Icon(Lucide.RefreshCw, contentDescription = "Regenerate", modifier = Modifier.size(18.dp))
+                }
+                IconButton(onClick = { GenericItem.cb_copy?.invoke(l_result, true) }) {
+                    Icon(Lucide.Copy, contentDescription = "Copy", modifier = Modifier.size(18.dp))
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            when (l_kind) {
+                "passphrase" -> {
+                    Text("Words: ${l_words.toInt()}")
+                    Slider(value = l_words, onValueChange = { l_words = it }, valueRange = 3f..20f)
+                    SettingsSwitch("Capitalise", l_capitalize, { l_capitalize = it }, true, true)
+                }
+                "pin" -> {
+                    Text("Digits: ${l_digits.toInt()}")
+                    Slider(value = l_digits, onValueChange = { l_digits = it }, valueRange = 4f..12f)
+                }
+                else -> {
+                    Text("Length: ${l_length.toInt()}")
+                    Slider(value = l_length, onValueChange = { l_length = it }, valueRange = 5f..128f)
+                    SettingsSwitch("A-Z", l_upper, { l_upper = it }, true)
+                    SettingsSwitch("0-9", l_numbers, { l_numbers = it })
+                    SettingsSwitch("!@#$%^&*", l_symbols, { l_symbols = it }, end = true)
+                }
+            }
+        }
+    }
+
+    @Composable
     fun view(modifier: Modifier = Modifier) {
         var context = LocalContext.current
         var scope = rememberCoroutineScope()
@@ -356,6 +497,12 @@ object SettingsScreen {
             ) { item ->
                 Column(modifier = Modifier.padding(16.dp)) {
                     if (item == SettingsSelection.NONE) {
+                        if (email.value.isNotEmpty()) {
+                            Text(email.value, style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 4.dp, bottom = 12.dp))
+                        }
+
                         SettingButton("Security", Lucide.Shield, {
                             c_item.value = SettingsSelection.Security
                         }, true)
@@ -364,43 +511,80 @@ object SettingsScreen {
                             c_item.value = SettingsSelection.AutoFill
                         })
 
+                        SettingButton("Generator", Lucide.Dices, {
+                            c_item.value = SettingsSelection.Generator
+                        })
+
+                        SettingButton("Sync Now", Lucide.RefreshCw, {
+                            cb_sync?.invoke()
+                        })
+
                         SettingButton("About", Lucide.BadgeCheck, {
                             c_item.value = SettingsSelection.About
                         }, false, true)
                     } else if (item == SettingsSelection.Security) {
-                        SettingsSwitch("Unlock with Biometrics", {
-
+                        SettingsSwitch("Unlock with Biometrics", biometrics.value, {
+                            cb_biometrics?.invoke(it)
                         }, true)
-
-                        var selected by remember { mutableStateOf("Immediate") }
 
                         SettingsDropdown(
                             text = "Session Timeout",
-                            options = listOf(
-                                "Immediate",
-                                "1 minute",
-                                "5 minutes",
-                                "15 minutes",
-                                "30 minutes",
-                                "1 hour",
-                                "4 hours",
-                                "Never"
-                            ),
-                            selected = selected,
-                            onSelectedChange = { selected = it }
+                            options = c_timeouts.map { it.second },
+                            selected = label(c_timeouts, autoLockSeconds.value),
+                            onSelectedChange = { l_label ->
+                                c_timeouts.firstOrNull { it.second == l_label }?.let {
+                                    autoLockSeconds.value = it.first
+                                    cb_set?.invoke("autoLockSeconds", it.first)
+                                }
+                            }
                         )
 
-                        SettingButton("Lock", onClick = {
+                        SettingsDropdown(
+                            text = "On Timeout",
+                            options = listOf("Lock", "Log Out"),
+                            selected = if (timeoutAction.value == "logout") "Log Out" else "Lock",
+                            onSelectedChange = {
+                                timeoutAction.value = if (it == "Log Out") "logout" else "lock"
+                                cb_set?.invoke("timeoutAction", timeoutAction.value)
+                            }
+                        )
 
+                        SettingsDropdown(
+                            text = "Clear Clipboard",
+                            options = c_clipboard.map { it.second },
+                            selected = label(c_clipboard, clipboardSeconds.value),
+                            onSelectedChange = { l_label ->
+                                c_clipboard.firstOrNull { it.second == l_label }?.let {
+                                    clipboardSeconds.value = it.first
+                                    cb_set?.invoke("clipboardClearSeconds", it.first)
+                                }
+                            }
+                        )
+
+                        SettingsSwitch("Allow Screenshots", allowScreenshots.value, {
+                            allowScreenshots.value = it
+                            cb_set?.invoke("allowScreenshots", it)
+                        })
+
+                        SettingButton("Lock", onClick = {
+                            cb_lock?.invoke()
                         })
 
                         SettingButton("Log Out", onClick = {
-
+                            cb_logout?.invoke()
                         }, end = true)
                     } else if (item == SettingsSelection.AutoFill) {
-                        SettingsSwitch("AutoFill", {
-
+                        SettingsSwitch("AutoFill", autofillEnabled.value, {
+                            cb_autofill?.invoke()
                         }, true, true)
+
+                        Text("Clientwarden fills logins in other apps and browsers while your vault " +
+                            "is unlocked. Android lets you change the autofill service in system settings.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(12.dp))
+                    } else if (item == SettingsSelection.Generator) {
+                        GeneratorView()
                     } else if (item == SettingsSelection.About) {
                         Column(
                             modifier = Modifier.fillMaxWidth().padding(top = 32.dp),

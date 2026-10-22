@@ -1,5 +1,11 @@
 package com.ct5.clientwarden
 
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.mutableStateListOf
+import com.composables.icons.lucide.Building2
+import com.composables.icons.lucide.User
+
 import android.content.res.Configuration
 import android.graphics.fonts.Font
 import androidx.compose.animation.core.MutableTransitionState
@@ -86,89 +92,42 @@ sealed interface NavItem {
     data object Identity : NavItem
     data object Note : NavItem
     data object SshKey : NavItem
-    data class Folder(val id: UUID) : NavItem
+    data object BankAccount : NavItem
+    data object DriversLicense : NavItem
+    data object Passport : NavItem
+    data class Folder(val id: String) : NavItem
+    data object Personal : NavItem
+    data class Organization(val id: String) : NavItem
+    data class Collection(val id: String, val organizationId: String) : NavItem
     data object None : NavItem
 }
 
 object NavScreen {
-    var folders = mutableListOf<ClientwardenFolder>(
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-        ClientwardenFolder(uuid = UUID(0L, 0L), name = "dsa"),
-    )
-    var c_item: NavItem = NavItem.AllItems
+    var folders = mutableStateListOf<ClientwardenFolder>()
+    var organizations = mutableStateListOf<VaultOrganization>()
+    var c_item by mutableStateOf<NavItem>(NavItem.AllItems)
 
     /*
-     * Tons of callbacks
+     * cb_open shows the items for a nav entry
      */
-    var cb_AllItems: (() -> List<ItemElement>)? = null
-    var cb_Favorites: (() -> List<ItemElement>)? = null
-    var cb_Trash: (() -> List<ItemElement>)? = null
-    var cb_Archived: (() -> List<ItemElement>)? = null
-
-    var cb_Login: (() -> List<ItemElement>)? = null
-    var cb_Card: (() -> List<ItemElement>)? = null
-    var cb_Identity: (() -> List<ItemElement>)? = null
-    var cb_Note: (() -> List<ItemElement>)? = null
-    var cb_SSHKey: (() -> List<ItemElement>)? = null
-
-    var cb_Folder: ((uuid: UUID) -> List<ItemElement>)? = null
+    var cb_open: ((NavItem) -> Unit)? = null
     var cb_NewFolder: ((name: String) -> Unit)? = null
-    var cb_RenameFolder: ((uuid: UUID, name: String) -> Unit)? = null
-    var cb_DeleteFolder: ((uuid: UUID) -> Unit)? = null
+    var cb_RenameFolder: ((id: String, name: String) -> Unit)? = null
+    var cb_DeleteFolder: ((id: String) -> Unit)? = null
+
+    /*
+     * Collections, for organisation members allowed to manage them
+     */
+    var cb_NewCollection: ((organizationId: String, name: String) -> Unit)? = null
+    var cb_RenameCollection: ((id: String, name: String) -> Unit)? = null
+    var cb_DeleteCollection: ((id: String) -> Unit)? = null
 
     @Composable
     fun NavButton(text: String, icon: ImageVector, item: NavItem,
                   onClick: () -> Unit = {}, start: Boolean = false,
                   end: Boolean = false, addEllipses: Boolean = false,
-                  folder: ClientwardenFolder = ClientwardenFolder(uuid = UUID(0L, 0L), name = "Fol")) {
+                  kind: String = "Folder", onRename: ((String) -> Unit)? = null,
+                  onDelete: (() -> Unit)? = null) {
         var m_expanded by remember { mutableStateOf(false) }
         var m_renameExpanded by remember { mutableStateOf(false) }
         var m_deleteExpanded by remember { mutableStateOf(false) }
@@ -343,13 +302,12 @@ object NavScreen {
             }
         }
 
-        var s_folderName by remember { mutableStateOf("") }
+        var s_folderName by remember(m_renameExpanded) { mutableStateOf(text) }
 
         /*
          * Prompt to ask for New Folder Name
          */
         if (m_renameExpanded) {
-            s_folderName = text
             Dialog(
                 onDismissRequest = {
                     m_renameExpanded = false
@@ -366,7 +324,7 @@ object NavScreen {
                         verticalArrangement = Arrangement.Center
                     ) {
                         Text(
-                            text = "Rename Folder",
+                            text = "Rename $kind",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold
                         )
@@ -406,13 +364,13 @@ object NavScreen {
                             FilledIconButton(
                                 onClick = {
                                     m_renameExpanded = false
-                                    cb_RenameFolder?.invoke(folder.uuid, s_folderName)
+                                    onRename?.invoke(s_folderName)
                                 },
                                 modifier = Modifier.size(32.dp)
                             ) {
                                 Icon(
                                     Lucide.ArrowRight,
-                                    contentDescription = "More",
+                                    contentDescription = "Rename",
                                     modifier = Modifier.size(18.dp)
                                 )
                             }
@@ -443,7 +401,7 @@ object NavScreen {
                         verticalArrangement = Arrangement.Center
                     ) {
                         Text(
-                            text = "Delete Folder",
+                            text = "Delete $kind",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold
                         )
@@ -451,7 +409,7 @@ object NavScreen {
                         Spacer(Modifier.height(8.dp))
 
                         Text(
-                            text = "Are you sure you would like to delete this folder? This is an irreversable action!",
+                            text = "Are you sure you would like to delete this ${kind.lowercase()}? This is an irreversible action!",
                             style = MaterialTheme.typography.bodyMedium
                         )
 
@@ -460,7 +418,7 @@ object NavScreen {
                         TextButton(
                             onClick = {
                                 m_deleteExpanded = false
-                                cb_DeleteFolder?.invoke(folder.uuid)
+                                onDelete?.invoke()
                             },
                             colors = ButtonDefaults.textButtonColors(
                                 containerColor = MaterialTheme.colorScheme.primary,
@@ -478,6 +436,7 @@ object NavScreen {
     @Composable
     fun view() {
         var addFolder_expanded by remember { mutableStateOf(false) }
+        var addCollection_org by remember { mutableStateOf<String?>(null) }
         var s_folderName by remember { mutableStateOf("New Folder") }
         Column(
             modifier = Modifier.fillMaxSize()
@@ -488,13 +447,13 @@ object NavScreen {
              * Main Nav Items
              */
             NavButton("All Items", Lucide.House, NavItem.AllItems,
-                start = true, onClick = { ItemsScreen.SetItems(cb_AllItems?.invoke() ?: emptyList()) })
+                start = true, onClick = { cb_open?.invoke(NavItem.AllItems) })
             NavButton("Favorites", Lucide.Star, NavItem.Favorites,
-                onClick = { ItemsScreen.SetItems(cb_Favorites?.invoke() ?: emptyList()) })
+                onClick = { cb_open?.invoke(NavItem.Favorites) })
             NavButton("Trash", Lucide.Trash2, NavItem.Trash,
-                onClick = { ItemsScreen.SetItems(cb_Trash?.invoke() ?: emptyList()) })
+                onClick = { cb_open?.invoke(NavItem.Trash) })
             NavButton("Archived", Lucide.Archive, NavItem.Archived,
-                end = true, onClick = { ItemsScreen.SetItems(cb_Archived?.invoke() ?: emptyList()) })
+                end = true, onClick = { cb_open?.invoke(NavItem.Archived) })
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -502,27 +461,71 @@ object NavScreen {
              * Item Type Nav Items
              */
             NavButton("Login", Lucide.SquareAsterisk, NavItem.Login,
-                start = true, onClick = { ItemsScreen.SetItems(cb_Login?.invoke() ?: emptyList()) })
+                start = true, onClick = { cb_open?.invoke(NavItem.Login) })
             NavButton("Card", Lucide.CreditCard, NavItem.Card,
-                onClick = { ItemsScreen.SetItems(cb_Card?.invoke() ?: emptyList()) })
+                onClick = { cb_open?.invoke(NavItem.Card) })
             NavButton("Identity", Lucide.IdCard, NavItem.Identity,
-                onClick = { ItemsScreen.SetItems(cb_Identity?.invoke() ?: emptyList()) })
+                onClick = { cb_open?.invoke(NavItem.Identity) })
             NavButton("Note", Lucide.StickyNote, NavItem.Note,
-                onClick = { ItemsScreen.SetItems(cb_Note?.invoke() ?: emptyList()) })
-            NavButton("SSH Key", Lucide.KeyRound, NavItem.SshKey, end = true,
-                onClick = { ItemsScreen.SetItems(cb_SSHKey?.invoke() ?: emptyList()) })
+                onClick = { cb_open?.invoke(NavItem.Note) })
+            NavButton("SSH Key", Lucide.KeyRound, NavItem.SshKey, end = !TopBar.extendedTypes,
+                onClick = { cb_open?.invoke(NavItem.SshKey) })
+            if (TopBar.extendedTypes) {
+                NavButton(ItemType.BankAccount.desc, ItemType.BankAccount.icon, NavItem.BankAccount,
+                    onClick = { cb_open?.invoke(NavItem.BankAccount) })
+                NavButton(ItemType.DriversLicense.desc, ItemType.DriversLicense.icon, NavItem.DriversLicense,
+                    onClick = { cb_open?.invoke(NavItem.DriversLicense) })
+                NavButton(ItemType.Passport.desc, ItemType.Passport.icon, NavItem.Passport, end = true,
+                    onClick = { cb_open?.invoke(NavItem.Passport) })
+            }
 
             Spacer(modifier = Modifier.height(16.dp))
+
+            /*
+             * Organisations and their collections
+             */
+            if (organizations.isNotEmpty()) {
+                NavButton("My Vault", Lucide.User, NavItem.Personal, start = true,
+                    onClick = { cb_open?.invoke(NavItem.Personal) })
+
+                for ((i, org) in organizations.withIndex()) {
+                    val l_last = i == organizations.lastIndex
+                    NavButton(if (org.keyAvailable) org.name else "${org.name} (unavailable)",
+                        Lucide.Building2, NavItem.Organization(org.id),
+                        end = l_last && org.collections.isEmpty() && !org.canManageCollections,
+                        onClick = { cb_open?.invoke(NavItem.Organization(org.id)) })
+
+                    for ((j, collection) in org.collections.withIndex()) {
+                        NavButton("    " + collection.name, Lucide.Folder,
+                            NavItem.Collection(collection.id, org.id),
+                            end = l_last && j == org.collections.lastIndex && !org.canManageCollections,
+                            onClick = { cb_open?.invoke(NavItem.Collection(collection.id, org.id)) },
+                            addEllipses = org.canManageCollections || collection.manage,
+                            kind = "Collection",
+                            onRename = { cb_RenameCollection?.invoke(collection.id, it) },
+                            onDelete = { cb_DeleteCollection?.invoke(collection.id) })
+                    }
+
+                    if (org.canManageCollections && org.keyAvailable) {
+                        NavButton("    Add Collection", Lucide.Plus, NavItem.None, end = l_last,
+                            onClick = { addCollection_org = org.id })
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+            }
 
             /*
              * Folder Nav Items
              */
             for ((i, folder) in folders.withIndex()) {
                 NavButton(folder.name, Lucide.Folder,
-                    NavItem.Folder(folder.uuid), start = i == 0,
+                    NavItem.Folder(folder.id), start = i == 0,
                     onClick = {
-                        ItemsScreen.SetItems(cb_Folder?.invoke(folder.uuid) ?: emptyList())
-                    }, addEllipses = true, folder = folder
+                        cb_open?.invoke(NavItem.Folder(folder.id))
+                    }, addEllipses = true,
+                    onRename = { cb_RenameFolder?.invoke(folder.id, it) },
+                    onDelete = { cb_DeleteFolder?.invoke(folder.id) }
                 )
             }
 
@@ -533,6 +536,28 @@ object NavScreen {
                 start = if (folders.size == 0) true else false, end = true,
                 onClick = {
                     addFolder_expanded = true
+                }
+            )
+        }
+
+        val l_collectionOrg = addCollection_org
+        if (l_collectionOrg != null) {
+            var l_name by remember { mutableStateOf("") }
+            AlertDialog(
+                onDismissRequest = { addCollection_org = null },
+                title = { Text("Create Collection") },
+                text = {
+                    OutlinedTextField(value = l_name, onValueChange = { l_name = it },
+                        singleLine = true, label = { Text("Name") })
+                },
+                confirmButton = {
+                    TextButton(enabled = l_name.isNotBlank(), onClick = {
+                        addCollection_org = null
+                        cb_NewCollection?.invoke(l_collectionOrg, l_name)
+                    }) { Text("Create") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { addCollection_org = null }) { Text("Cancel") }
                 }
             )
         }
@@ -603,7 +628,7 @@ object NavScreen {
                             ) {
                                 Icon(
                                     Lucide.ArrowRight,
-                                    contentDescription = "More",
+                                    contentDescription = "Create",
                                     modifier = Modifier.size(18.dp)
                                 )
                             }

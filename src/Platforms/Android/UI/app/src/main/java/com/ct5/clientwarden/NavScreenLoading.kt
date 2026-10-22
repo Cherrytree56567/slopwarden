@@ -86,7 +86,7 @@ object NavScreenLoading {
     fun NavButton(text: String, icon: ImageVector, item: NavItem,
                   onClick: () -> Unit = {}, start: Boolean = false,
                   end: Boolean = false, addEllipses: Boolean = true,
-                  folder: ClientwardenFolder = ClientwardenFolder(uuid = UUID(0L, 0L), name = "Fol")) {
+                  folder: ClientwardenFolder = ClientwardenFolder(id = "", name = "Fol")) {
         var m_expanded by remember { mutableStateOf(false) }
         var m_renameExpanded by remember { mutableStateOf(false) }
         var m_deleteExpanded by remember { mutableStateOf(false) }
@@ -210,7 +210,7 @@ object NavScreenLoading {
              */
             for ((i, folder) in folders.withIndex()) {
                 NavButton(folder.name, Lucide.Folder,
-                    NavItem.Folder(folder.uuid), start = i == 0,
+                    NavItem.Folder(folder.id), start = i == 0,
                     onClick = {
                     }, addEllipses = true, folder = folder
                 )

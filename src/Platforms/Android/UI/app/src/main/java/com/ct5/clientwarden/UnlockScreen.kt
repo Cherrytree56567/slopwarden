@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
@@ -58,7 +59,13 @@ import kotlin.time.Duration.Companion.milliseconds
 object UnlockScreen {
     var password = mutableStateOf("")
 
-    var cb_unlock: ((String) -> Boolean)? = null
+    var cb_unlock: ((String) -> Unit)? = null
+    var cb_biometric: (() -> Unit)? = null
+    var cb_logout: (() -> Unit)? = null
+
+    var busy = mutableStateOf(false)
+    var biometrics = mutableStateOf(false)
+    var email = mutableStateOf("")
 
     @Composable
     fun view() {
@@ -86,31 +93,49 @@ object UnlockScreen {
             Spacer(modifier = Modifier.height(12.dp))
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                FilledIconButton(
-                    onClick = {
-                        /*
-                         * TODO: Biometric Support
-                         */
+                if (biometrics.value) {
+                    FilledIconButton(
+                        onClick = {
+                            cb_biometric?.invoke()
+                        },
+                        enabled = !busy.value
+                    ) {
+                        Icon(
+                            Lucide.FingerprintPattern,
+                            contentDescription = "Biometric"
+                        )
                     }
-                ) {
-                    Icon(
-                        Lucide.FingerprintPattern,
-                        contentDescription = "Biometric"
-                    )
-                }
 
-                Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
 
                 Button(
                     onClick = {
                         cb_unlock?.invoke(password.value)
                         password.value = ""
                     },
+                    enabled = !busy.value,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Unlock")
+                    if (busy.value) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("Unlock")
+                    }
                 }
             }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            if (email.value.isNotEmpty()) {
+                Text(email.value, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
+            Text("Log Out",
+                modifier = Modifier.clickable { cb_logout?.invoke() },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary)
         }
     }
 }

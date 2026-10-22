@@ -38,3 +38,9 @@ if (TARGET httplib::httplib)
     target_link_libraries(clientwarden_core_runtime PUBLIC clientwarden_core httplib::httplib OpenSSL::SSL OpenSSL::Crypto)
     target_compile_definitions(clientwarden_core_runtime PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
 endif()
+
+# NDK r27's libc++ (LLVM 18) keeps std::jthread and std::stop_token behind this flag.
+if (ANDROID)
+    target_compile_options(clientwarden_core PUBLIC -fexperimental-library)
+    target_link_options(clientwarden_core PUBLIC -fexperimental-library)
+endif()

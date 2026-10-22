@@ -26,3 +26,5 @@ vcpkg_installed
 **/.idea
 Cargo.lock
 src/Platforms/Linux/target
+# Built by cmake/android.cmake
+src/Platforms/Android/UI/app/src/main/jniLibs/

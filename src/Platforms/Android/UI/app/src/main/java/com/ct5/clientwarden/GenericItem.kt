@@ -1,5 +1,6 @@
 package com.ct5.clientwarden
 
+import androidx.compose.foundation.text.KeyboardOptions
 import android.content.res.Configuration
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -31,6 +32,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import com.composables.icons.lucide.Copy
+import com.composables.icons.lucide.Dices
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -87,6 +92,8 @@ enum class GenericItemType {
     Date
 }
 
+data class WebsiteRow(val id: Long, val value: String)
+
 data class TOTPResult(
     val refreshDate: Long,
     val maxTimer: Int,
@@ -100,8 +107,15 @@ data class GenericItemData(
     var value3: String,
     var value4: String,
     var type: GenericItemType,
-    var cb_getTOTP: (() -> TOTPResult)?
+    var cb_getTOTP: (suspend () -> TOTPResult?)?
 ) {
+    /*
+     * The core's field key ("username", "number"...), or "" for values that aren't saved
+     * back (e.g. ones an organisation hides from this user)
+     */
+    var key: String = ""
+    var copyable: Boolean = true
+
     constructor(title: String, value: String, type: GenericItemType) : this(
         title = title,
         value = value,
@@ -112,7 +126,7 @@ data class GenericItemData(
         cb_getTOTP = null
     )
 
-    constructor(title: String, value: String, type: GenericItemType, cb_getTOTP: (() -> TOTPResult)?) : this(
+    constructor(title: String, value: String, type: GenericItemType, cb_getTOTP: (suspend () -> TOTPResult?)?) : this(
         title = title,
         value = value,
         type = type,
@@ -134,9 +148,39 @@ data class GenericItemData(
 }
 
 class GenericItem(var data: GenericItemData, var editable: Boolean) {
+    companion object {
+        /*
+         * Copies a value (cleared again after the clipboard timeout)
+         */
+        var cb_copy: ((String, Boolean) -> Unit)? = null
+
+        /*
+         * Generates a new password for a password field
+         */
+        var cb_generate: (suspend () -> String?)? = null
+    }
+
+    @Composable
+    private fun CopyButton(value: String, sensitive: Boolean) {
+        if (data.copyable && value.isNotEmpty()) {
+            Spacer(modifier = Modifier.width(12.dp))
+
+            IconButton(
+                onClick = { cb_copy?.invoke(value, sensitive) },
+                colors = IconButtonDefaults.iconButtonColors(
+                    containerColor = Color.Transparent
+                ),
+                modifier = Modifier.size(18.dp)
+            ) {
+                Icon(Lucide.Copy, contentDescription = "Copy")
+            }
+        }
+    }
+
     @Composable
     fun view() {
         var p_visible by remember { mutableStateOf(false) }
+        var m_value by remember(data) { mutableStateOf(data.value) }
         Column(modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
@@ -186,6 +230,8 @@ class GenericItem(var data: GenericItemData, var editable: Boolean) {
                                 contentDescription = "Show"
                             )
                         }
+
+                        CopyButton(data.value, true)
                     }
                 } else if (data.type == GenericItemType.TOTP) {
                     var totpValue by remember { mutableStateOf("") }
@@ -199,9 +245,14 @@ class GenericItem(var data: GenericItemData, var editable: Boolean) {
                             val now = System.currentTimeMillis() / 1000
                             if (now >= refresh) {
                                 val res = rcb_getTOTP()
-                                totpValue = res.value
-                                totpMax = res.maxTimer
-                                refresh = res.refreshDate
+                                if (res == null) {
+                                    totpValue = ""
+                                    refresh = now + 5
+                                } else {
+                                    totpValue = res.value
+                                    totpMax = maxOf(1, res.maxTimer)
+                                    refresh = res.refreshDate
+                                }
                             }
                             totpLeft = maxOf(0.0, (refresh - now).toDouble())
                             delay(1000.milliseconds)
@@ -210,9 +261,11 @@ class GenericItem(var data: GenericItemData, var editable: Boolean) {
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            if (totpValue.isEmpty()) data.value else totpValue,
+                            if (totpValue.isEmpty()) "––– –––" else totpValue,
                             style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace)
                         )
+
+                        CopyButton(totpValue, true)
 
                         Spacer(modifier = Modifier
                             .weight(1f)
@@ -246,12 +299,19 @@ class GenericItem(var data: GenericItemData, var editable: Boolean) {
                     /*
                      * Generic, ML_Generic, Website, Date
                      */
-                    Text(
-                        data.value,
-                        maxLines = if (data.type == GenericItemType.ML_Generic ||
-                            data.type == GenericItemType.Website) 30 else 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            data.value,
+                            maxLines = if (data.type == GenericItemType.ML_Generic ||
+                                data.type == GenericItemType.Website) 30 else 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+
+                        if (data.type != GenericItemType.Website && data.type != GenericItemType.ML_Generic) {
+                            CopyButton(data.value, false)
+                        }
+                    }
                 }
             } else {
                 if (data.type == GenericItemType.Generic4) {
@@ -279,22 +339,41 @@ class GenericItem(var data: GenericItemData, var editable: Boolean) {
                         }, Modifier.weight(1f))
                     }
                 } else if (data.type == GenericItemType.Website) {
-                    var websites by remember { mutableStateOf(data.value.lines()) }
+                    /*
+                     * Rows keep an id of their own: keyed by their text, every keystroke would
+                     * make a new row and drop the keyboard focus.
+                     */
+                    var m_nextId by remember { mutableStateOf(0L) }
+                    var websites by remember {
+                        mutableStateOf(data.value.lines().map { WebsiteRow(m_nextId++, it) })
+                    }
+                    fun commit() {
+                        data.value = websites.joinToString("\n") { it.value }
+                    }
 
                     val l_state = rememberLazyListState()
                     val r_state = rememberReorderableLazyListState(l_state) { from, to ->
                         websites = websites.toMutableList().apply {
                             add(to.index, removeAt(from.index))
                         }
-                        data.value = websites.joinToString("\n")
+                        commit()
+                    }
+
+                    TextButton(onClick = {
+                        if (websites.none { it.value == "https://" }) {
+                            websites = websites.filter { it.value.isNotBlank() } + WebsiteRow(m_nextId++, "https://")
+                        }
+                        commit()
+                    }) {
+                        Text("Add website")
                     }
 
                     LazyColumn(state = l_state, modifier = Modifier.heightIn(max = 300.dp)) {
                         items(
                             items = websites,
-                            key = { it }
-                        ) { line ->
-                            ReorderableItem(r_state, key = line) { dragging ->
+                            key = { it.id }
+                        ) { row ->
+                            ReorderableItem(r_state, key = row.id) { dragging ->
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -306,15 +385,10 @@ class GenericItem(var data: GenericItemData, var editable: Boolean) {
                                     /*
                                      * Text Input
                                      */
-                                    BasicTextView(line, { value ->
-                                        val index = websites.indexOf(line)
-                                        if (index != -1) {
-                                            websites = websites.toMutableList().apply {
-                                                this[index] = value
-                                            }
-                                            data.value = websites.joinToString("\n")
-                                        }
-                                    }, Modifier.weight(1f))
+                                    BasicTextView(row.value, { value ->
+                                        websites = websites.map { if (it.id == row.id) it.copy(value = value) else it }
+                                        commit()
+                                    }, Modifier.weight(1f), keyboardOptions = c_urlKeyboard)
 
                                     Spacer(modifier = Modifier.width(8.dp))
 
@@ -375,14 +449,44 @@ class GenericItem(var data: GenericItemData, var editable: Boolean) {
                     /*
                      * Generic, ML_Generic, Password, ML_Password, TOTP
                      */
-                    BasicTextView(
-                        data.value,
-                        { data.value = it },
-                        multiLine = if (data.type == GenericItemType.ML_Generic ||
-                                        data.type == GenericItemType.ML_Password) true
-                                    else false,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    val scope = rememberCoroutineScope()
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        BasicTextView(
+                            m_value,
+                            {
+                                m_value = it
+                                data.value = it
+                            },
+                            multiLine = if (data.type == GenericItemType.ML_Generic ||
+                                            data.type == GenericItemType.ML_Password) true
+                                        else false,
+                            keyboardOptions = when (data.type) {
+                                GenericItemType.Password, GenericItemType.ML_Password, GenericItemType.TOTP -> c_secretKeyboard
+                                GenericItemType.ML_Generic -> KeyboardOptions.Default
+                                else -> c_plainKeyboard
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+
+                        if (data.type == GenericItemType.Password && cb_generate != null) {
+                            Spacer(modifier = Modifier.width(8.dp))
+
+                            IconButton(
+                                onClick = {
+                                    scope.launch {
+                                        cb_generate?.invoke()?.let {
+                                            m_value = it
+                                            data.value = it
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.size(22.dp)
+                            ) {
+                                Icon(Lucide.Dices, contentDescription = "Generate",
+                                    modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
                 }
             }
         }

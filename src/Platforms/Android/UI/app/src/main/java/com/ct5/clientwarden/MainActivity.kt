@@ -3,7 +3,8 @@ package com.ct5.clientwarden
 import android.annotation.SuppressLint
 import android.content.res.Configuration
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import android.view.WindowManager
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.clickable
@@ -22,6 +23,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.tooling.preview.Devices
 import androidx.compose.ui.tooling.preview.Preview
@@ -43,11 +50,20 @@ object MainActivityObject {
     }
 }
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        /*
+         * Secure by default; the user's "allow screenshots" setting lifts this once the
+         * vault's settings are known.
+         */
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        setRecentsScreenshotEnabled(false)
+        Files.register(this)
+        LocalNetwork.register(this)
         enableEdgeToEdge()
+        VaultBridge.attach(this)
         setContent {
             ClientwardenTheme {
                 if (MainActivityObject.c_view.value == MainViews.VaultUI) {
@@ -57,15 +73,30 @@ class MainActivity : ComponentActivity() {
                 } else if (MainActivityObject.c_view.value == MainViews.UnlockUI) {
                     UnlockScreen.view()
                 }
+
+                VaultBridge.ConfirmHost()
             }
         }
     }
+
+    override fun onResume() {
+        super.onResume()
+        VaultBridge.onForeground(this)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (!isChangingConfigurations) {
+            VaultBridge.onBackground()
+        }
+    }
+
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        VaultBridge.noteActivity()
+    }
 }
 
-/*
- * Next Step:
- *  - Setup Vault UI Bridge (some weird JNI Stuff)
- */
 @SuppressLint("UnusedMaterial3ScaffoldPaddingParameter")
 @Composable
 fun VaultUI() {
@@ -76,28 +107,34 @@ fun VaultUI() {
             NavBar(navController = navController)
         }
     ) { innerPadding ->
+        /*
+         * A tap outside the open Add pill closes it without also pressing whatever is under
+         * it. Watched here before the children see it, so taps on the pill itself still work.
+         */
+        var l_origin by remember { mutableStateOf(Offset.Zero) }
         Column(modifier = Modifier.fillMaxSize()
             .padding(innerPadding)
+            .onGloballyPositioned { l_origin = it.positionInWindow() }
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        if (!TopBar.m_expanded || event.type != PointerEventType.Press) {
+                            continue
+                        }
+                        val position = event.changes.first().position + l_origin
+                        if (TopBar.pillBounds?.contains(position) != true) {
+                            event.changes.forEach { it.consume() }
+                            TopBar.m_expanded = false
+                        }
+                    }
+                }
+            }
         ) {
             AppNavHost(
                 navController = navController,
                 startDestination = NavTabs.HOME,
                 modifier = Modifier.weight(1f)
-            )
-        }
-
-        /*
-         * This allows the Add pill in the top panel
-         * to close if we click somewhere else on the screen
-         */
-        if (TopBar.m_expanded) {
-            Box(modifier = Modifier.fillMaxSize()
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null
-                ) {
-                    TopBar.m_expanded = false
-                }
             )
         }
     }
