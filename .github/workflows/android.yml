@@ -1,0 +1,71 @@
+name: Android
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  NDK_VERSION: r27d
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up JDK 21
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '21'
+
+    - name: Set up the NDK
+      uses: nttld/setup-ndk@v1
+      id: ndk
+      with:
+        ndk-version: ${{ env.NDK_VERSION }}
+        add-to-path: false
+
+    # profiles/conan-android-v8 reads the toolchain from these.
+    - name: Export the NDK toolchain
+      run: |
+        BIN="${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+        echo "ANDROID_NDK_HOME=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+        echo "CC=$BIN/aarch64-linux-android31-clang" >> $GITHUB_ENV
+        echo "CXX=$BIN/aarch64-linux-android31-clang++" >> $GITHUB_ENV
+        echo "AR=$BIN/llvm-ar" >> $GITHUB_ENV
+        echo "RANLIB=$BIN/llvm-ranlib" >> $GITHUB_ENV
+        echo "STRIP=$BIN/llvm-strip" >> $GITHUB_ENV
+
+    - name: Install Conan
+      run: pipx install conan==2.29.1 && conan profile detect
+
+    - name: Cache Conan packages
+      uses: actions/cache@v4
+      with:
+        path: ~/.conan2/p
+        key: android-conan-v1-${{ hashFiles('conanfile.py', 'profiles/conan-android-v8') }}
+        restore-keys: android-conan-v1-
+
+    - name: Build the native library
+      run: |
+        conan install . -pr:h profiles/conan-android-v8 -pr:b default -s:b compiler.cppstd=20 \
+            --build=missing -of build/android
+        cmake -S . -B build/android/cmake -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE=build/android/build/Release/generators/conan_toolchain.cmake
+        cmake --build build/android/cmake --target clientwarden -j4
+
+    - name: Build the APK
+      working-directory: src/Platforms/Android/UI
+      run: |
+        chmod +x gradlew
+        ./gradlew --no-daemon :app:assembleDebug
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ClientWarden-android-arm64
+        path: src/Platforms/Android/UI/app/build/outputs/apk/debug/*.apk

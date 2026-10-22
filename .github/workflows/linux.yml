@@ -1,0 +1,53 @@
+name: Linux
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # Conan packages and the Cargo registry, built inside the container.
+    - name: Cache dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/cw-conan
+          ~/cw-cargo
+        key: linux-deps-v1-${{ hashFiles('conanfile.py', 'tools/docker/linux.Dockerfile', 'src/Platforms/Linux/Cargo.toml') }}
+        restore-keys: linux-deps-v1-
+
+    - name: Build the build image
+      run: docker build -t clientwarden-linux -f tools/docker/linux.Dockerfile tools/docker
+
+    - name: Build
+      run: |
+        mkdir -p ~/cw-conan ~/cw-cargo
+        docker run --rm -v "$PWD":/src -v ~/cw-conan:/root/.conan2 -v ~/cw-cargo:/root/.cargo/registry \
+            clientwarden-linux /src/tools/docker/build-linux.sh
+        sudo chown -R "$(id -u):$(id -g)" build ~/cw-conan ~/cw-cargo
+
+    # Starts the app under Xvfb with a throwaway keyring and checks it keeps running.
+    - name: Smoke test
+      run: |
+        docker run --rm -v "$PWD":/src clientwarden-linux sh -c '
+            Xvfb :99 -screen 0 1280x800x24 >/dev/null 2>&1 & export DISPLAY=:99 CW_DATA_DIR=/tmp/cwdata
+            eval "$(dbus-launch --sh-syntax)"
+            echo -n "" | gnome-keyring-daemon --unlock --components=secrets >/dev/null
+            timeout 20 /src/build/linux/app/clientwarden; status=$?
+            [ $status -eq 124 ] || { echo "the app exited early ($status)"; exit 1; }'
+
+    - name: Package
+      run: tar -C build/linux/app -czf ClientWarden-linux-x86_64.tar.gz clientwarden libclientwarden.so
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ClientWarden-linux-x86_64
+        path: ClientWarden-linux-x86_64.tar.gz

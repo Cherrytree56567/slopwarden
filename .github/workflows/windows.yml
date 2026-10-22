@@ -1,0 +1,51 @@
+name: Windows
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  # Cross-built with MinGW-w64 on Linux (tools/docker/windows.Dockerfile), like local builds.
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Cache dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/cw-conan
+          ~/cw-cargo
+        key: windows-deps-v1-${{ hashFiles('conanfile.py', 'tools/docker/windows.Dockerfile', 'tools/docker/conan-windows-mingw', 'src/Platforms/Linux/Cargo.toml') }}
+        restore-keys: windows-deps-v1-
+
+    - name: Build the build image
+      run: docker build -t clientwarden-windows -f tools/docker/windows.Dockerfile tools/docker
+
+    - name: Build
+      run: |
+        mkdir -p ~/cw-conan ~/cw-cargo
+        docker run --rm -v "$PWD":/src -v ~/cw-conan:/root/.conan2 -v ~/cw-cargo:/root/.cargo/registry \
+            clientwarden-windows /src/tools/docker/build-windows.sh
+        sudo chown -R "$(id -u):$(id -g)" build ~/cw-conan ~/cw-cargo
+
+    - name: Check it only needs system DLLs
+      run: |
+        docker run --rm -v "$PWD":/src clientwarden-windows sh -c '
+            for f in /src/build/windows/app/*.exe /src/build/windows/app/*.dll; do
+                x86_64-w64-mingw32-objdump -p "$f" | grep "DLL Name"; done' | sort -u | tee dlls.txt
+        if grep -viE "libclientwarden|kernel32|user32|gdi32|advapi32|crypt32|ws2_32|msvcrt|ntdll|ole32|oleaut32|shell32|combase|imm32|dwmapi|uxtheme|opengl32|bcryptprimitives|api-ms-win" dlls.txt; then
+            echo "unexpected DLL dependency"; exit 1
+        fi
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ClientWarden-windows-x64
+        path: |
+          build/windows/app/ClientWarden.exe
+          build/windows/app/libclientwarden.dll
