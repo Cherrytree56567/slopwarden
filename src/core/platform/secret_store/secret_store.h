@@ -78,6 +78,36 @@ namespace clientwarden {
     };
 
     /**
+     * @brief Splits values too big for the underlying store into numbered parts.
+     *
+     * Windows Credential Manager caps a secret at 2560 bytes, less than a session's tokens.
+     * Small values are stored as-is; big ones as "<key>#1".."<key>#n" plus a marker under
+     * "<key>" saying how many parts there are.
+     */
+    class ChunkedSecretStore : public SecretStore {
+    public:
+        /**
+         * @brief Wraps a store.
+         *
+         * @param inner The store with the size limit
+         * @param max_value The largest value it accepts, in bytes
+         */
+        ChunkedSecretStore(std::shared_ptr<SecretStore> inner, size_t max_value);
+
+        std::optional<SecureString> get(std::string_view key) override;
+        bool set(
+                std::string_view key, std::string_view value, SecretProtection protection) override;
+        bool remove(std::string_view key) override;
+
+    private:
+        size_t partsOf_(std::string_view key);
+        void removeParts_(std::string_view key, size_t from, size_t to);
+
+        std::shared_ptr<SecretStore> m_inner_;
+        size_t m_max_value_;
+    };
+
+    /**
      * @brief Namespaces another store with a key prefix, giving each vault its own entries.
      */
     class ScopedSecretStore : public SecretStore {
