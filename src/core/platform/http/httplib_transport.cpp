@@ -17,6 +17,7 @@ extern "C" INT WSAAPI GetAddrInfoExCancel(LPHANDLE handle);
 #include <memory>
 
 #include "http.h"
+#include "platform_transport.h"
 #include "utils/logger/logger.h"
 
 /*
@@ -298,5 +299,9 @@ namespace clientwarden {
                     reinterpret_cast<const uint8_t*>(message.data()), message.size()));
         }
         return true;
+    }
+
+    std::shared_ptr<HttpTransport> createPlatformTransport() {
+        return std::make_shared<HttplibTransport>();
     }
 }

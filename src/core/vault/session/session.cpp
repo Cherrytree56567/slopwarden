@@ -191,13 +191,54 @@ namespace clientwarden {
         }
 
         std::lock_guard<std::mutex> lock(m_token_mutex_);
-        m_access_token_ = stringAt(*json, "access");
-        m_refresh_token_ = stringAt(*json, "refresh");
-        const Json& expires = at(*json, "expiresAt");
+        if (m_seal_tokens_ || json->contains("sealed")) {
+            m_sealed_tokens_ = stringAt(*json, "sealed");
+            if (!m_sealed_tokens_.empty()) {
+                return true; // opened by setKeys
+            }
+        }
+        applyTokens_(*json);
+        return !m_refresh_token_.empty();
+    }
+
+    void Session::applyTokens_(const Json& json) {
+        m_access_token_ = stringAt(json, "access");
+        m_refresh_token_ = stringAt(json, "refresh");
+        const Json& expires = at(json, "expiresAt");
         m_expires_at_ = expires.is_number_integer()
                                 ? static_cast<std::time_t>(expires.get<std::int64_t>())
                                 : 0;
-        return !m_refresh_token_.empty();
+    }
+
+    Json Session::tokensJson_() {
+        // clang-format off
+        return {
+            { "access", m_access_token_ },
+            { "refresh", m_refresh_token_ },
+            { "expiresAt", static_cast<std::int64_t>(m_expires_at_) }
+        };
+        // clang-format on
+    }
+
+    /*
+     * Writes the tokens (caller holds m_token_mutex_). When sealing without the user key yet,
+     * nothing is written: they're stored once setKeys provides it.
+     */
+    bool Session::storeTokens_() {
+        if (!m_seal_tokens_) {
+            return m_secrets_->set(c_tokens_key, tokensJson_().dump(), SecretProtection::None);
+        }
+        SymmetricKey user_key;
+        {
+            std::shared_lock<std::shared_mutex> lock(m_key_mutex_);
+            user_key = m_user_key_;
+        }
+        if (user_key.m_enc.empty()) {
+            return true;
+        }
+        m_sealed_tokens_ = m_crypto_->encryptText(tokensJson_().dump(), user_key);
+        Json sealed = { { "sealed", m_sealed_tokens_ } };
+        return m_secrets_->set(c_tokens_key, sealed.dump(), SecretProtection::None);
     }
 
     bool Session::setTokens(TokenResponse token) {
@@ -207,15 +248,12 @@ namespace clientwarden {
             m_refresh_token_ = std::move(token.m_refresh_token);
         }
         m_expires_at_ = std::time(nullptr) + token.m_expires_in;
+        return storeTokens_();
+    }
 
-        // clang-format off
-        Json json = {
-            { "access", m_access_token_ },
-            { "refresh", m_refresh_token_ },
-            { "expiresAt", static_cast<std::int64_t>(m_expires_at_) }
-        };
-        // clang-format on
-        return m_secrets_->set(c_tokens_key, json.dump(), SecretProtection::None);
+    void Session::setSealTokens(bool seal) {
+        std::lock_guard<std::mutex> lock(m_token_mutex_);
+        m_seal_tokens_ = seal;
     }
 
     std::optional<SecureString> Session::getAccessToken() {
@@ -285,17 +323,49 @@ namespace clientwarden {
     }
 
     void Session::setKeys(SecureBytes master_key, SymmetricKey user_key) {
-        std::unique_lock<std::shared_mutex> lock(m_key_mutex_);
-        m_master_key_ = std::move(master_key);
-        m_user_key_ = std::move(user_key);
+        {
+            std::unique_lock<std::shared_mutex> lock(m_key_mutex_);
+            m_master_key_ = std::move(master_key);
+            m_user_key_ = user_key;
+        }
+
+        std::lock_guard<std::mutex> lock(m_token_mutex_);
+        if (!m_seal_tokens_) {
+            return;
+        }
+        if (m_refresh_token_.empty() && !m_sealed_tokens_.empty()) {
+            try {
+                Json json = Json::parse(
+                        m_crypto_->decryptText(m_sealed_tokens_, user_key), nullptr, false);
+                if (json.is_object()) {
+                    applyTokens_(json);
+                }
+            } catch (const CryptoError&) {
+                Logger::get()->warn("The sealed session didn't open; log in again");
+            }
+        } else if (!m_refresh_token_.empty()) {
+            storeTokens_(); // received during login, before the user key
+        }
     }
 
     void Session::clearKeys() {
-        std::unique_lock<std::shared_mutex> lock(m_key_mutex_);
-        m_master_key_.clear();
-        m_master_key_.shrink_to_fit();
-        m_user_key_ = SymmetricKey();
-        m_organization_keys_.clear();
+        {
+            std::unique_lock<std::shared_mutex> lock(m_key_mutex_);
+            m_master_key_.clear();
+            m_master_key_.shrink_to_fit();
+            m_user_key_ = SymmetricKey();
+            m_organization_keys_.clear();
+        }
+
+        /*
+         * Sealed tokens only exist decrypted while unlocked.
+         */
+        std::lock_guard<std::mutex> lock(m_token_mutex_);
+        if (m_seal_tokens_ && !m_sealed_tokens_.empty()) {
+            m_access_token_.clear();
+            m_refresh_token_.clear();
+            m_expires_at_ = 0;
+        }
     }
 
     void Session::setOrganizationKeys(std::map<SecureString, SymmetricKey, std::less<>> keys) {

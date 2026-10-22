@@ -4,7 +4,7 @@
 
 set(ALLOWLIST
     platform/http/httplib_transport.cpp     # cpp-httplib API
-    platform/secret_store/secret_store.cpp  # keychain library API
+    platform/secret_store/keychain_secret_store.cpp  # keychain library API
 )
 
 get_filename_component(CORE_DIR "${CORE_DIR}" ABSOLUTE)

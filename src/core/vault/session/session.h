@@ -123,6 +123,18 @@ namespace clientwarden {
         void setKeys(SecureBytes master_key, SymmetricKey user_key);
 
         /**
+         * @brief Keeps the session's tokens encrypted under the user key at rest, for platforms
+         * whose secret store isn't protected by the OS (the Wii's SD card).
+         *
+         * While locked, only the sealed copy exists: the tokens are decrypted on unlock
+         * (setKeys) and dropped again on lock (clearKeys). Tokens received before the user key
+         * is known (during login) are sealed as soon as it is.
+         *
+         * @param seal True to seal
+         */
+        void setSealTokens(bool seal);
+
+        /**
          * @brief Wipes the keys (lock).
          */
         void clearKeys();
@@ -201,6 +213,9 @@ namespace clientwarden {
     private:
         std::optional<Account> migrateLegacyAccount_();
         bool setBiometricFlag_(bool enabled);
+        Json tokensJson_();
+        void applyTokens_(const Json& json);
+        bool storeTokens_();
 
         std::shared_ptr<SecretStore> m_secrets_;
         std::shared_ptr<Crypto> m_crypto_;
@@ -211,6 +226,8 @@ namespace clientwarden {
         SecureString m_access_token_;
         SecureString m_refresh_token_;
         std::time_t m_expires_at_ = 0;
+        bool m_seal_tokens_ = false;
+        SecureString m_sealed_tokens_; // the stored EncString while sealing
         std::function<void()> m_on_revoked_;
 
         mutable std::shared_mutex m_key_mutex_;

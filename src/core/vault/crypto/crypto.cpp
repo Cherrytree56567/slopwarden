@@ -13,7 +13,7 @@
 #include <botan/pwdhash.h>
 #include <botan/rsa.h>
 #include <botan/x509_key.h>
-#include <botan/system_rng.h>
+#include "platform/random/random.h"
 
 #include "utils/encoding/encoding.h"
 #include "utils/errors/errors.h"
@@ -72,7 +72,7 @@ namespace clientwarden {
 
             Sealed out;
             out.m_iv.resize(c_iv_size);
-            Botan::system_rng().randomize(out.m_iv.data(), out.m_iv.size());
+            random::secure().randomize(out.m_iv.data(), out.m_iv.size());
             out.m_ct = aesCbc_(Botan::Cipher_Dir::Encryption, key.m_enc, out.m_iv, plaintext);
             out.m_mac = hmac_(key.m_mac, out.m_iv, out.m_ct);
             return out;
@@ -103,8 +103,8 @@ namespace clientwarden {
         SymmetricKey key;
         key.m_enc.resize(c_key_size);
         key.m_mac.resize(c_key_size);
-        Botan::system_rng().randomize(key.m_enc.data(), key.m_enc.size());
-        Botan::system_rng().randomize(key.m_mac.data(), key.m_mac.size());
+        random::secure().randomize(key.m_enc.data(), key.m_enc.size());
+        random::secure().randomize(key.m_mac.data(), key.m_mac.size());
         return key;
     }
 
@@ -307,7 +307,7 @@ namespace clientwarden {
     }
 
     void Crypto::randomBytes(std::span<uint8_t> out) const {
-        Botan::system_rng().randomize(out.data(), out.size());
+        random::secure().randomize(out.data(), out.size());
     }
 
     uint32_t Crypto::randomBelow(uint32_t bound) const {
@@ -334,7 +334,7 @@ namespace clientwarden {
     }
 
     RsaKeyPair Crypto::generateRsaKeyPair() const {
-        Botan::RSA_PrivateKey key(Botan::system_rng(), 2048);
+        Botan::RSA_PrivateKey key(random::secure(), 2048);
         RsaKeyPair pair;
         pair.m_private_key = Botan::PKCS8::BER_encode(key);
         std::vector<uint8_t> public_key = key.subject_public_key();
@@ -346,9 +346,9 @@ namespace clientwarden {
             std::span<const uint8_t> plaintext, std::span<const uint8_t> public_key) const {
         try {
             std::shared_ptr<Botan::Public_Key> key = Botan::X509::load_key(public_key);
-            Botan::PK_Encryptor_EME encryptor(*key, Botan::system_rng(), "OAEP(SHA-1)");
+            Botan::PK_Encryptor_EME encryptor(*key, random::secure(), "OAEP(SHA-1)");
             std::vector<uint8_t> ciphertext =
-                    encryptor.encrypt(plaintext.data(), plaintext.size(), Botan::system_rng());
+                    encryptor.encrypt(plaintext.data(), plaintext.size(), random::secure());
             return SecureString("4.") + encoding::base64Encode(ciphertext);
         } catch (const Botan::Exception&) {
             throw CryptoError("invalid RSA public key");
@@ -370,7 +370,7 @@ namespace clientwarden {
         try {
             Botan::DataSource_Memory source(private_key.data(), private_key.size());
             std::shared_ptr<Botan::Private_Key> key = Botan::PKCS8::load_key(source);
-            Botan::PK_Decryptor_EME decryptor(*key, Botan::system_rng(), padding);
+            Botan::PK_Decryptor_EME decryptor(*key, random::secure(), padding);
             return decryptor.decrypt(ciphertext.data(), ciphertext.size());
         } catch (const Botan::Exception&) {
             throw CryptoError("RSA decryption failed");

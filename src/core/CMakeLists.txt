@@ -13,6 +13,16 @@ set(CLIENTWARDEN_CORE_RUNTIME_SOURCES
 set(CLIENTWARDEN_KEYCHAIN_FACTORY ${CMAKE_CURRENT_SOURCE_DIR}/platform/secret_store/keychain_factory.cpp)
 list(REMOVE_ITEM CLIENTWARDEN_CORE_SOURCES ${CLIENTWARDEN_CORE_RUNTIME_SOURCES} ${CLIENTWARDEN_KEYCHAIN_FACTORY})
 
+# The Wii has no OS random generator or keychain; its platform code (src/Platforms/Wii)
+# provides random::secure(), its own secret store and HTTP transport.
+if (CLIENTWARDEN_WII)
+    list(REMOVE_ITEM CLIENTWARDEN_CORE_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/platform/random/random.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/platform/secret_store/keychain_secret_store.cpp
+    )
+    list(REMOVE_ITEM CLIENTWARDEN_CORE_RUNTIME_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/platform/http/httplib_transport.cpp)
+endif()
+
 # Platforms without an OS keychain the keychain library supports define
 # createPlatformSecretStore() themselves.
 if (NOT ANDROID AND NOT CLIENTWARDEN_WII)
@@ -30,10 +40,15 @@ target_link_libraries(clientwarden_core PUBLIC
     Boost::boost
     Boost::url
     msgpack-cxx
-    keychain
 )
+if (NOT CLIENTWARDEN_WII)
+    target_link_libraries(clientwarden_core PUBLIC keychain)
+endif()
 
-if (TARGET httplib::httplib)
+if (CLIENTWARDEN_WII)
+    add_library(clientwarden_core_runtime STATIC ${CLIENTWARDEN_CORE_RUNTIME_SOURCES})
+    target_link_libraries(clientwarden_core_runtime PUBLIC clientwarden_core)
+elseif (TARGET httplib::httplib)
     add_library(clientwarden_core_runtime STATIC ${CLIENTWARDEN_CORE_RUNTIME_SOURCES})
     target_link_libraries(clientwarden_core_runtime PUBLIC clientwarden_core httplib::httplib OpenSSL::SSL OpenSSL::Crypto)
     target_compile_definitions(clientwarden_core_runtime PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)

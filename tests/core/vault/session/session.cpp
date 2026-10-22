@@ -260,3 +260,53 @@ TEST_CASE("forget removes credentials but keeps the device id") {
     }
     REQUIRE(Session::getDeviceId(h.m_secrets) == device);
 }
+
+TEST_CASE("Sealed tokens are only readable with the user key") {
+    std::shared_ptr<MemorySecretStore> secrets = std::make_shared<MemorySecretStore>();
+    std::shared_ptr<Crypto> crypto = std::make_shared<Crypto>();
+    SymmetricKey user_key = SymmetricKey::generate();
+    SecureBytes master_key(32, 7);
+
+    /*
+     * Login: tokens arrive before the user key, and nothing is stored until it does.
+    */
+    {
+        Session session(secrets, crypto);
+        session.setSealTokens(true);
+        TokenResponse token;
+        token.m_access_token = "access-secret";
+        token.m_refresh_token = "refresh-secret";
+        token.m_expires_in = 3600;
+        REQUIRE(session.setTokens(token));
+        REQUIRE_FALSE(secrets->get("tokens"));
+
+        session.setKeys(master_key, user_key);
+        std::optional<SecureString> stored = secrets->get("tokens");
+        REQUIRE(stored);
+        REQUIRE(stored->find("refresh-secret") == SecureString::npos);
+        REQUIRE(stored->find("access-secret") == SecureString::npos);
+        REQUIRE(session.getAccessToken() == SecureString("access-secret"));
+
+        session.clearKeys();
+        REQUIRE_FALSE(session.getAccessToken());
+    }
+
+    /*
+     * Next launch: the session counts as present (Unlockable) but holds no tokens until unlock.
+    */
+    Session restarted(secrets, crypto);
+    restarted.setSealTokens(true);
+    REQUIRE(restarted.loadTokens());
+    REQUIRE_FALSE(restarted.getAccessToken());
+    restarted.setKeys(master_key, user_key);
+    REQUIRE(restarted.getAccessToken() == SecureString("access-secret"));
+
+    /*
+     * The wrong key opens nothing.
+    */
+    Session wrong(secrets, crypto);
+    wrong.setSealTokens(true);
+    REQUIRE(wrong.loadTokens());
+    wrong.setKeys(master_key, SymmetricKey::generate());
+    REQUIRE_FALSE(wrong.getAccessToken());
+}

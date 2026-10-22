@@ -1,5 +1,6 @@
 #include "vault_manager.h"
 
+#include "platform/http/platform_transport.h"
 #include "platform/paths/paths.h"
 #include "platform/secret_store/platform_secret_store.h"
 #include "utils/logger/logger.h"
@@ -20,11 +21,10 @@ namespace clientwarden {
             std::filesystem::path data = paths::dataDirectory();
             Logger::installFileLogger(data);
 
-            g_vault_manager = std::make_shared<VaultManager>(
-                    createPlatformSecretStore(), std::make_shared<DiskFileStore>(data),
-                    std::make_shared<DiskFileStore>(paths::resourceDirectory()), []() {
-                        return std::shared_ptr<HttpTransport>(std::make_shared<HttplibTransport>());
-                    });
+            g_vault_manager = std::make_shared<VaultManager>(createPlatformSecretStore(),
+                    std::make_shared<DiskFileStore>(data),
+                    std::make_shared<DiskFileStore>(paths::resourceDirectory()),
+                    []() { return createPlatformTransport(); });
         }
         return *g_vault_manager;
     }

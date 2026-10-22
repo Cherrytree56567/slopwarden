@@ -49,6 +49,15 @@ namespace clientwarden {
          * @return True unless the OS refused
          */
         virtual bool remove(std::string_view key) = 0;
+
+        /**
+         * @brief Whether the OS guards what's stored (a keychain, Keystore, Credential Manager).
+         * Stores that are just files (the Wii's SD card) say no, and the session then seals its
+         * tokens under the user key.
+         *
+         * @return True by default
+         */
+        virtual bool protectedByOs() const { return true; }
     };
 
     /**
@@ -98,6 +107,7 @@ namespace clientwarden {
         bool set(
                 std::string_view key, std::string_view value, SecretProtection protection) override;
         bool remove(std::string_view key) override;
+        bool protectedByOs() const override;
 
     private:
         size_t partsOf_(std::string_view key);
@@ -124,6 +134,7 @@ namespace clientwarden {
         bool set(
                 std::string_view key, std::string_view value, SecretProtection protection) override;
         bool remove(std::string_view key) override;
+        bool protectedByOs() const override;
 
     private:
         SecureString key_(std::string_view key);

@@ -38,6 +38,7 @@ namespace clientwarden {
         m_settings_ = std::make_shared<Settings>(files);
         m_profile_ = std::make_shared<Profile>(m_store_);
         m_session_ = std::make_shared<Session>(secrets, m_crypto_);
+        m_session_->setSealTokens(!secrets->protectedByOs());
         m_network_ = std::make_shared<Network>(
                 std::move(transport), DeviceInfo::forThisPlatform(Session::getDeviceId(secrets)));
         m_network_->setTokenSource(m_session_);
