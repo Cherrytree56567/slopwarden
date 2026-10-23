@@ -1,5 +1,7 @@
 #include "keyboard.h"
 
+#include <algorithm>
+
 namespace clientwarden::console::ui {
     namespace {
         constexpr const char* c_letters[] = { "1234567890", "qwertyuiop", "asdfghjkl@", "zxcvbnm.-_" };
@@ -20,6 +22,7 @@ namespace clientwarden::console::ui {
 
     void Keyboard::open(std::string_view title, std::string_view value, bool masked, Done done) {
         m_open_ = true;
+        m_fresh_ = true;
         m_title_ = SecureString(title);
         m_value_ = SecureString(value);
         m_masked_ = masked;
@@ -48,9 +51,18 @@ namespace clientwarden::console::ui {
         }
     }
 
-    void Keyboard::frame(Ui& ui, const Input& input) {
+    void Keyboard::frame(Ui& ui, const Input& given) {
         if (!m_open_) {
             return;
+        }
+        /*
+         * The tap or A that opened the keyboard would otherwise press the key under it.
+         */
+        bool fresh = m_fresh_;
+        m_fresh_ = false;
+        Input input = fresh ? Input() : given;
+        if (fresh) {
+            ui.setEnabled(false);
         }
         Gfx& g = ui.m_gfx;
         g.fill({ 0, 0, c_screen_w, c_screen_h }, 0x0b0b12);
@@ -88,7 +100,10 @@ namespace clientwarden::console::ui {
         g.clearClip();
 
         const char* const* rows = m_symbols_ ? c_symbols : c_letters;
-        int key_w = 56;
+        /*
+         * Ten keys across whatever the screen's width (56 px on the Wii's 640).
+         */
+        int key_w = std::min(56, (c_screen_w - 24 - 9 * 4) / 10);
         int key_h = 46;
         int left = (c_screen_w - 10 * key_w - 9 * 4) / 2;
         int top = 116;
@@ -111,8 +126,14 @@ namespace clientwarden::console::ui {
 
         int bottom = top + 4 * (key_h + 4) + 6;
         int w = (c_screen_w - 48 - 5 * 6) / 6;
+        /*
+         * The word where it fits (the Wii), a symbol where it doesn't (the 3DS).
+         */
+        auto label = [&g, w](const char* word, const char* symbol) {
+            return g.measure(word, Font::BodyBold) <= w - 16 ? word : symbol;
+        };
         int bx = 24;
-        if (ui.button({ bx, bottom, w, key_h }, "Shift", m_shift_ ? Style::Primary : Style::Normal)) {
+        if (ui.button({ bx, bottom, w, key_h }, label("Shift", "⇧"), m_shift_ ? Style::Primary : Style::Normal)) {
             m_shift_ = !m_shift_;
         }
         bx += w + 6;
@@ -120,23 +141,23 @@ namespace clientwarden::console::ui {
             m_symbols_ = !m_symbols_;
         }
         bx += w + 6;
-        if (ui.button({ bx, bottom, w, key_h }, "Space")) {
+        if (ui.button({ bx, bottom, w, key_h }, label("Space", "␣"))) {
             m_value_.push_back(' ');
         }
         bx += w + 6;
-        if (ui.button({ bx, bottom, w, key_h }, "Delete")) {
+        if (ui.button({ bx, bottom, w, key_h }, label("Delete", "⌫"))) {
             backspace_(m_value_);
         }
         bx += w + 6;
         if (m_masked_) {
-            if (ui.button({ bx, bottom, w, key_h }, "Show", m_reveal_ ? Style::Primary : Style::Normal)) {
+            if (ui.button({ bx, bottom, w, key_h }, label("Show", "◐"), m_reveal_ ? Style::Primary : Style::Normal)) {
                 m_reveal_ = !m_reveal_;
             }
-        } else if (ui.button({ bx, bottom, w, key_h }, "Clear")) {
+        } else if (ui.button({ bx, bottom, w, key_h }, label("Clear", "✕"))) {
             m_value_.clear();
         }
         bx += w + 6;
-        if (ui.button({ bx, bottom, w, key_h }, "Done", Style::Primary)) {
+        if (ui.button({ bx, bottom, w, key_h }, label("Done", "✓"), Style::Primary)) {
             submit(SecureString(m_value_));
             return;
         }

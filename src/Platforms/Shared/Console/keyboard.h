@@ -37,6 +37,7 @@ namespace clientwarden::console::ui {
 
     private:
         bool m_open_ = false;
+        bool m_fresh_ = false;    // opened this frame: the press that opened it is not a key
         bool m_masked_ = false;
         bool m_shift_ = false;
         bool m_symbols_ = false;

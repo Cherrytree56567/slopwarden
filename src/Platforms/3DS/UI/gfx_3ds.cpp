@@ -112,6 +112,9 @@ namespace clientwarden::console::ui {
                 y0 = std::max(y0, m_clip_y0);
                 x1 = std::min(x1, m_clip_x1);
                 y1 = std::min(y1, m_clip_y1);
+                if (x1 <= x0 || y1 <= y0) {
+                    return; // entirely outside the clip
+                }
                 for (int y = y0; y < y1; ++y) {
                     std::fill(m_pixels.begin() + y * m_w + x0, m_pixels.begin() + y * m_w + x1, rgb);
                 }
