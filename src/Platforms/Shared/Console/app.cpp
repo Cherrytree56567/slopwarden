@@ -4,10 +4,9 @@
 #include <atomic>
 #include <cstdio>
 
-#include "Platform/Entropy.h"
-#include "Platform/System.h"
+#include "platform.h"
 
-namespace clientwarden::wii::ui {
+namespace clientwarden::console::ui {
     namespace {
         constexpr int c_margin = 24;
         constexpr int c_content_w = c_screen_w - 2 * c_margin;
@@ -45,6 +44,18 @@ namespace clientwarden::wii::ui {
                 } else {
                     out.push_back(c);
                 }
+            }
+            return out;
+        }
+
+        /**
+         * @brief Fills in "{console}" with the console's name ("the Wii", "the 3DS").
+         */
+        SecureString on_(std::string_view text) {
+            SecureString out(text);
+            constexpr std::string_view c_marker = "{console}";
+            for (size_t at = out.find(c_marker); at != SecureString::npos; at = out.find(c_marker)) {
+                out.replace(at, c_marker.size(), platform::consoleName());
             }
             return out;
         }
@@ -428,7 +439,7 @@ namespace clientwarden::wii::ui {
                 return;
             }
             SecureString id = str_(reply.m_result, "id");
-            toast_(bool_(reply.m_result, "synced") ? "Saved" : "Saved on the Wii; it will sync later", false);
+            toast_(bool_(reply.m_result, "synced") ? "Saved" : on_("Saved on {console}; it will sync later"), false);
             m_draft_fields_.clear();
             back_();
             openItem_(id);
@@ -459,6 +470,17 @@ namespace clientwarden::wii::ui {
         }
 
         bool blocked = m_blocking_ > 0;
+
+        /*
+         * While the vault works (key derivation takes minutes on a console), redraw the spinner
+         * at 10 fps and leave the CPU to it: the consoles don't time-slice threads on a core,
+         * so a UI drawing every frame starves the worker.
+         */
+        if (blocked && m_frame_ % 6 != 0) {
+            m_gfx_.idle();
+            return true;
+        }
+
         bool modal = m_keyboard_.isOpen() || m_menu_open_ || m_type_picker_open_ || m_confirm_action_ != nullptr;
         if (blocked) {
             input = Input { input.m_pointer_valid, input.m_pointer_x, input.m_pointer_y };
@@ -554,8 +576,25 @@ namespace clientwarden::wii::ui {
     void App::editField_(Rect rect, std::string_view label, SecureString& value, bool masked) {
         if (m_ui_.field(rect, label, value, masked)) {
             SecureString* target = &value;
-            m_keyboard_.open(label, value, masked, [target](SecureString text) { *target = std::move(text); });
+            openKeyboard_(label, value, masked, [target](SecureString text) { *target = std::move(text); });
         }
+    }
+
+    /*
+     * The console's own keyboard applet where there is one (3DS); otherwise ours. Test builds
+     * always use ours, since the script types into it.
+     */
+    void App::openKeyboard_(std::string_view label, std::string_view value, bool masked, Keyboard::Done done) {
+#ifndef CLIENTWARDEN_CONSOLE_TEST_BUILD
+        if (platform::hasSystemKeyboard()) {
+            std::optional<SecureString> text = platform::systemKeyboard(label, value, masked);
+            if (text) {
+                done(std::move(*text));
+            }
+            return;
+        }
+#endif
+        m_keyboard_.open(label, value, masked, std::move(done));
     }
 
     void App::toastBar_() {
@@ -575,8 +614,9 @@ namespace clientwarden::wii::ui {
         const char* text = c_dots[(m_frame_ / 20) % 4];
         m_gfx_.text((c_screen_w - m_gfx_.measure("Working...", Font::Title)) / 2, 200, text, Font::Title,
                 colors::c_text);
-        m_gfx_.text((c_screen_w - m_gfx_.measure("This can take a while on the Wii", Font::Small)) / 2, 244,
-                "This can take a while on the Wii", Font::Small, colors::c_subtext);
+        SecureString slow = on_("This can take a while on {console}");
+        m_gfx_.text((c_screen_w - m_gfx_.measure(slow, Font::Small)) / 2, 244, slow, Font::Small,
+                colors::c_subtext);
         int bar_w = 200;
         int pos = static_cast<int>(m_frame_ * 4 % (bar_w + 60)) - 60;
         m_gfx_.fill({ (c_screen_w - bar_w) / 2, 276, bar_w, 6 }, colors::c_surface2);
@@ -653,7 +693,7 @@ namespace clientwarden::wii::ui {
      */
 
     void App::entropy_() {
-        size_t bits = entropy::creditedBits();
+        size_t bits = platform::entropyBits();
         m_gfx_.text(c_margin, 60, "ClientWarden", Font::Title, colors::c_text);
         m_gfx_.textWrapped(c_margin, 110,
                 "Move the Wii Remote around, or point it at the screen and wave it. ClientWarden is "
@@ -662,17 +702,17 @@ namespace clientwarden::wii::ui {
                 Font::Body, colors::c_subtext, c_content_w);
         Rect bar { c_margin, 260, c_content_w, 22 };
         m_gfx_.fill(bar, colors::c_surface2);
-        m_gfx_.fill({ bar.x, bar.y, static_cast<int>(bar.w * std::min(bits, entropy::c_required_bits) /
-                                                     entropy::c_required_bits), bar.h }, colors::c_accent);
+        m_gfx_.fill({ bar.x, bar.y, static_cast<int>(bar.w * std::min(bits, platform::entropyRequired()) /
+                                                     platform::entropyRequired()), bar.h }, colors::c_accent);
         char label[48];
         std::snprintf(label, sizeof label, "%u of %u bits", static_cast<unsigned>(bits),
-                static_cast<unsigned>(entropy::c_required_bits));
+                static_cast<unsigned>(platform::entropyRequired()));
         m_gfx_.text(c_margin, 292, label, Font::Small, colors::c_subtext);
-        const char* network = networkReady()     ? "Network: connected"
+        const char* network = platform::networkReady()     ? "Network: connected"
                               : networkSettled() ? "Network: not connected (you can still unlock offline)"
                                                  : "Network: connecting…";
-        m_gfx_.text(c_margin, 330, network, Font::Small, networkReady() ? colors::c_green : colors::c_subtext);
-        if (entropy::ready() && networkSettled()) {
+        m_gfx_.text(c_margin, 330, network, Font::Small, platform::networkReady() ? colors::c_green : colors::c_subtext);
+        if (platform::entropyReady() && networkSettled()) {
             m_screen_ = Screen::Starting;
             refreshState_();
         }
@@ -701,8 +741,8 @@ namespace clientwarden::wii::ui {
                 toast_("Enter your email and master password");
             } else if (m_server_ == 2 && m_base_url_.empty()) {
                 toast_("Enter your server's URL");
-            } else if (!networkReady()) {
-                toast_("The Wii isn't connected to the internet");
+            } else if (!platform::networkReady()) {
+                toast_("Not connected to the internet");
             } else {
                 Json server;
                 if (m_server_ == 0) {
@@ -738,8 +778,8 @@ namespace clientwarden::wii::ui {
         }
         Rect note = m_ui_.next(60);
         m_gfx_.textWrapped(note.x, note.y,
-                networkReady() ? "Logging in derives your key from your password, which takes a while on the Wii."
-                               : "Waiting for the network…",
+                platform::networkReady() ? on_("Logging in derives your key from your password, which takes a while on {console}.")
+                                         : SecureString("Waiting for the network…"),
                 Font::Small, colors::c_subtext, note.w);
         m_ui_.endColumn();
     }
@@ -777,9 +817,9 @@ namespace clientwarden::wii::ui {
     void App::passkey_() {
         header_("Passkey needed", false);
         m_gfx_.textWrapped(c_margin, c_content_y + 10,
-                "This account asks for a passkey or security key to log in, which the Wii can't "
-                "provide. Turn on another two-step method (an authenticator app or email) for your "
-                "account, then try again.",
+                on_("This account asks for a passkey or security key to log in, which {console} can't "
+                    "provide. Turn on another two-step method (an authenticator app or email) for your "
+                    "account, then try again."),
                 Font::Body, colors::c_subtext, c_content_w);
         if (m_ui_.button({ c_margin, c_content_y + 150, 200, c_row_h }, "Back to login", Style::Primary)) {
             call_("auth.logout", Json::object(), [this](Reply&) { refreshState_(); });
@@ -933,7 +973,7 @@ namespace clientwarden::wii::ui {
         SecureString before = m_search_;
         Rect search = m_ui_.next(c_field_h);
         if (m_ui_.field(search, "Search", m_search_, false)) {
-            m_keyboard_.open("Search", m_search_, false, [this](SecureString text) {
+            openKeyboard_("Search", m_search_, false, [this](SecureString text) {
                 m_search_ = std::move(text);
                 loadItems_();
             });
@@ -952,7 +992,7 @@ namespace clientwarden::wii::ui {
                 if (m_ui_.row(m_ui_.next(52, 4), str_(item, "name"), subtitle, false, badge)) {
                     SecureString id = str_(item, "id");
                     if (bool_(item, "reprompt")) {
-                        m_keyboard_.open("Master password (this item asks for it)", "", true,
+                        openKeyboard_("Master password (this item asks for it)", "", true,
                                 [this, id](SecureString password) {
                                     call_("auth.verifyPassword", { { "password", password } },
                                             [this, id](Reply& reply) {
@@ -1140,7 +1180,7 @@ namespace clientwarden::wii::ui {
             }
             const Json& passkeys = at(login, "passkeys");
             if (passkeys.is_array() && !passkeys.empty()) {
-                value_row("passkey", "Passkey", "Saved (can't be used on the Wii)", false);
+                value_row("passkey", "Passkey", on_("Saved (can't be used on {console})"), false);
             }
         }
 
@@ -1401,7 +1441,7 @@ namespace clientwarden::wii::ui {
             if (str_(m_received_, "type") == "file") {
                 Rect r = m_ui_.next(60);
                 m_gfx_.textWrapped(r.x + 4, r.y, "This Send is a file (" + str_(m_received_, "fileName") +
-                        "). Files can't be saved on the Wii; open the link on another device.",
+                        on_("). Files can't be saved on {console}; open the link on another device."),
                         Font::Body, colors::c_subtext, r.w);
             } else if (bool_(m_received_, "textHidden") && !m_received_revealed_) {
                 if (m_ui_.button(m_ui_.next(c_row_h), "Reveal the text", Style::Primary)) {
@@ -1562,9 +1602,9 @@ namespace clientwarden::wii::ui {
         }
         Rect about = m_ui_.next(80);
         m_gfx_.textWrapped(about.x + 4, about.y + 6,
-                "ClientWarden for the Wii. Your vault is encrypted on the SD card; the master password "
-                "is needed every time you start it. " +
-                        SecureString(networkReady() ? "Online." : "No network."),
+                on_("ClientWarden for {console}. Your vault is encrypted on the SD card; the master password "
+                    "is needed every time you start it. ") +
+                        SecureString(platform::networkReady() ? "Online." : "No network."),
                 Font::Small, colors::c_subtext, about.w);
         m_ui_.endColumn();
     }

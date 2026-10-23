@@ -47,7 +47,7 @@ namespace clientwarden::wii::entropy {
      */
     bool ready();
 
-#ifdef CLIENTWARDEN_WII_TEST_BUILD
+#ifdef CLIENTWARDEN_CONSOLE_TEST_BUILD
     /**
      * @brief Test builds only (Dolphin, whose emulated remote is still): credits the pool as if
      * the remote had moved. Never compiled into release builds.

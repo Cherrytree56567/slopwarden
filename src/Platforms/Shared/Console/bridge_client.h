@@ -12,7 +12,7 @@
  * seconds on the Wii) and hands results back to the UI thread, which collects them with
  * poll() once a frame. Events the vault raises by itself are queued the same way.
  */
-namespace clientwarden::wii::ui {
+namespace clientwarden::console::ui {
     struct Reply {
         bool m_ok = false;
         Json m_result;

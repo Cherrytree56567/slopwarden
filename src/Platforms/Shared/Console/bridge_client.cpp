@@ -2,7 +2,7 @@
 
 #include "JsonBridge/JsonBridge.h"
 
-namespace clientwarden::wii::ui {
+namespace clientwarden::console::ui {
     BridgeClient::BridgeClient() {
         bridge::JsonBridge::shared().onEvent([this](SecureString event) {
             std::lock_guard<std::mutex> lock(m_mutex_);

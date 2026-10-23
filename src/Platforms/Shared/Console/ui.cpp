@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-namespace clientwarden::wii::ui {
+namespace clientwarden::console::ui {
     void Ui::begin(const Input& input) {
         m_input_ = input;
         m_controls_.clear();

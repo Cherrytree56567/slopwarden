@@ -12,7 +12,7 @@
  * Remote pointer (A clicks what it points at) and without it (the D-pad moves a focus
  * highlight through the controls in the order they were drawn, A activates).
  */
-namespace clientwarden::wii::ui {
+namespace clientwarden::console::ui {
     /**
      * @brief One frame's input.
      */

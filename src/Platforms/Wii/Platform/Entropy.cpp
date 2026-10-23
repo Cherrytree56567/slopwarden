@@ -134,7 +134,7 @@ namespace clientwarden::wii::entropy {
         return g_rng != nullptr;
     }
 
-#ifdef CLIENTWARDEN_WII_TEST_BUILD
+#ifdef CLIENTWARDEN_CONSOLE_TEST_BUILD
     void creditForTesting() {
         std::lock_guard<std::mutex> lock(g_mutex);
         mixTime_();

@@ -1,23 +1,21 @@
 #pragma once
-#include <SDL.h>
-#include <SDL_ttf.h>
-
 #include <cstdint>
 #include <filesystem>
-#include <map>
 #include <memory>
 #include <string_view>
 
+#include "console_metrics.h" // per platform: c_screen_w, c_screen_h (the logical canvas)
 #include "utils/secure_string/secure_string.h"
 
 /*
- * Software drawing onto a 640x480 surface that's uploaded to the screen once a frame. Drawing
- * in software keeps the UI simple on the Wii's GX renderer and lets test builds save exact
- * screenshots of what's shown.
+ * Software drawing onto a canvas of c_screen_w x c_screen_h logical pixels, shown once a frame.
+ * Each console implements the backend (SDL2 on the Wii, the framebuffer and FreeType on the
+ * 3DS, which also scales the logical canvas to its smaller screen). Drawing in software keeps
+ * the UI simple and lets test builds save exact screenshots of what's shown.
  */
-namespace clientwarden::wii::ui {
-    constexpr int c_screen_w = 640;
-    constexpr int c_screen_h = 480;
+namespace clientwarden::console::ui {
+    using metrics::c_screen_h;
+    using metrics::c_screen_w;
 
     struct Rect {
         int x = 0;
@@ -59,9 +57,10 @@ namespace clientwarden::wii::ui {
          * @brief Opens the window and loads the fonts from the app folder.
          *
          * @param app_dir Where DejaVuSans.ttf and DejaVuSans-Bold.ttf are
-         * @return False if SDL or the fonts couldn't be set up
+         * @return False if the screen or the fonts couldn't be set up
          */
         bool init(std::filesystem::path app_dir);
+        Gfx();
         ~Gfx();
 
         void clear(std::uint32_t rgb);
@@ -99,6 +98,11 @@ namespace clientwarden::wii::ui {
         void present();
 
         /**
+         * @brief Waits for the next frame without drawing one.
+         */
+        void idle();
+
+        /**
          * @brief Saves the last frame as a BMP (test builds).
          */
         bool saveBmp(std::filesystem::path path);
@@ -109,29 +113,7 @@ namespace clientwarden::wii::ui {
         void forgetText();
 
     private:
-        TTF_Font* font_(Font font);
-        SDL_Surface* rendered_(std::string_view text, Font font, std::uint32_t rgb);
-
-        SDL_Window* m_window_ = nullptr;
-        SDL_Renderer* m_renderer_ = nullptr;
-        SDL_Texture* m_texture_ = nullptr;
-        SDL_Surface* m_canvas_ = nullptr;
-        TTF_Font* m_small_ = nullptr;
-        TTF_Font* m_body_ = nullptr;
-        TTF_Font* m_bold_ = nullptr;
-        TTF_Font* m_title_ = nullptr;
-        TTF_Font* m_code_ = nullptr;
-
-        struct Key {
-            SecureString m_text;
-            int m_font;
-            std::uint32_t m_rgb;
-            bool operator<(const Key& o) const {
-                if (m_font != o.m_font) return m_font < o.m_font;
-                if (m_rgb != o.m_rgb) return m_rgb < o.m_rgb;
-                return m_text < o.m_text;
-            }
-        };
-        std::map<Key, SDL_Surface*> m_cache_;
+        struct Impl;
+        std::unique_ptr<Impl> m_impl_;
     };
 }

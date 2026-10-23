@@ -7,7 +7,7 @@
 #include <network.h>
 #include <sys/time.h>
 
-#include "Utc.h"
+#include "utc.h"
 #include "platform/paths/paths.h"
 
 namespace clientwarden::wii {
@@ -42,7 +42,7 @@ namespace clientwarden::wii {
     }
 
     void initPaths() {
-        utc::load();
+        console::utc::load();
     }
 }
 
@@ -52,31 +52,4 @@ std::filesystem::path clientwarden::paths::dataDirectory() {
 
 std::filesystem::path clientwarden::paths::resourceDirectory() {
     return clientwarden::wii::appDirectory();
-}
-
-/*
- * The console's clock is whatever the user set in the Wii Menu, in local time, with no time
- * zone. TOTP codes and token expiry need UTC, so every gettimeofday()/clock_gettime() is
- * shifted by the offset learned from servers' Date headers (Clock.cpp). Wired in with the
- * linker's --wrap so newlib's time functions all go through it.
- */
-extern "C" {
-int __real___syscall_gettod_r(struct _reent* ptr, struct timeval* tp, struct timezone* tz);
-int __real___syscall_clock_gettime(clockid_t clock_id, struct timespec* tp);
-
-int __wrap___syscall_gettod_r(struct _reent* ptr, struct timeval* tp, struct timezone* tz) {
-    int result = __real___syscall_gettod_r(ptr, tp, tz);
-    if (result == 0 && tp) {
-        tp->tv_sec += clientwarden::wii::utc::offsetSeconds();
-    }
-    return result;
-}
-
-int __wrap___syscall_clock_gettime(clockid_t clock_id, struct timespec* tp) {
-    int result = __real___syscall_clock_gettime(clock_id, tp);
-    if (result == 0 && tp && clock_id == CLOCK_REALTIME) {
-        tp->tv_sec += clientwarden::wii::utc::offsetSeconds();
-    }
-    return result;
-}
 }

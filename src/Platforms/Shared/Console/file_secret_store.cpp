@@ -22,7 +22,7 @@ namespace {
     using clientwarden::SecretProtection;
     using clientwarden::SecureString;
 
-    class WiiSecretStore : public clientwarden::SecretStore {
+    class FileSecretStore : public clientwarden::SecretStore {
     public:
         std::optional<SecureString> get(std::string_view key) override {
             std::lock_guard<std::mutex> lock(m_mutex);
@@ -112,6 +112,6 @@ namespace {
 
 namespace clientwarden {
     std::shared_ptr<SecretStore> createPlatformSecretStore() {
-        return std::make_shared<WiiSecretStore>();
+        return std::make_shared<FileSecretStore>();
     }
 }

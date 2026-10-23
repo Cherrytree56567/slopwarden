@@ -7,7 +7,7 @@
  * difference to a server's Date header (time zone plus drift) is the correction. It is kept
  * in data/clock.txt for starts before the network is up.
  */
-namespace clientwarden::wii::utc {
+namespace clientwarden::console::utc {
     /**
      * @brief The seconds to add to the console clock to get UTC.
      */

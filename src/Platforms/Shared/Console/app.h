@@ -12,7 +12,7 @@
  * The ClientWarden Wii app: screens, the vault state they follow, and the data they show.
  * One screen at a time, full width (it's a TV); B goes back, HOME opens the menu.
  */
-namespace clientwarden::wii::ui {
+namespace clientwarden::console::ui {
     /**
      * @brief Records that network start-up has finished (connected or not). The vault isn't
      * touched before then: libogc's network stack isn't safe to use while it's initialising.
@@ -97,6 +97,7 @@ namespace clientwarden::wii::ui {
          * @brief A text field that opens the keyboard and writes the result back.
          */
         void editField_(Rect rect, std::string_view label, SecureString& value, bool masked);
+        void openKeyboard_(std::string_view label, std::string_view value, bool masked, Keyboard::Done done);
 
         Gfx& m_gfx_;
         Ui m_ui_;

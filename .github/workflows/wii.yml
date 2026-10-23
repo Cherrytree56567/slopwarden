@@ -23,7 +23,7 @@ jobs:
         docker run --rm -v "$PWD":/src clientwarden-wii /src/tools/docker/build-wii.sh
         sudo chown -R "$(id -u):$(id -g)" build
 
-    # Release builds must not contain the Dolphin test hooks.
+    # Release builds must not contain the emulator test hooks.
     - name: Check for test hooks
       run: |
         if strings build/wii/apps/clientwarden/boot.dol | grep -qiE "test-script|creditForTesting"; then

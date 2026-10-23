@@ -1,11 +1,19 @@
-#ifdef CLIENTWARDEN_WII_TEST_BUILD
+#ifdef CLIENTWARDEN_CONSOLE_TEST_BUILD
 #include "test_script.h"
 
-#include <SDL.h>
+#include <chrono>
 
-#include "Platform/Entropy.h"
+#include "platform.h"
 
-namespace clientwarden::wii::ui {
+namespace clientwarden::console::ui {
+    namespace {
+        std::uint32_t ticks_() {
+            static const std::chrono::steady_clock::time_point c_start = std::chrono::steady_clock::now();
+            return static_cast<std::uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - c_start).count());
+        }
+    }
+
     bool TestScript::load(std::filesystem::path app_dir) {
         m_dir_ = app_dir;
         std::ifstream in(app_dir / "test-script.txt");
@@ -34,7 +42,7 @@ namespace clientwarden::wii::ui {
             return;
         }
         std::ofstream out(m_dir_ / "test-log.txt", std::ios::app);
-        out << SDL_GetTicks() << " " << line << "\n";
+        out << ticks_() << " " << line << "\n";
     }
 
     bool TestScript::step(App& app, Input& input) {
@@ -53,7 +61,7 @@ namespace clientwarden::wii::ui {
             }
             return true;
         }
-        if (SDL_GetTicks() < m_wait_until_ || m_lines_.empty()) {
+        if (ticks_() < m_wait_until_ || m_lines_.empty()) {
             return true;
         }
         std::string line = m_lines_.front();
@@ -63,9 +71,9 @@ namespace clientwarden::wii::ui {
         std::string rest = space == std::string::npos ? "" : line.substr(space + 1);
 
         if (command == "wait") {
-            m_wait_until_ = SDL_GetTicks() + static_cast<std::uint32_t>(std::atoi(rest.c_str()));
+            m_wait_until_ = ticks_() + static_cast<std::uint32_t>(std::atoi(rest.c_str()));
         } else if (command == "entropy") {
-            entropy::creditForTesting();
+            platform::creditEntropyForTesting();
         } else if (command == "click") {
             int x = 0;
             int y = 0;

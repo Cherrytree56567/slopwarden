@@ -23,7 +23,7 @@
  */
 namespace {
     using namespace clientwarden::wii;
-    using namespace clientwarden::wii::ui;
+    using namespace clientwarden::console::ui;
 
     /**
      * @brief Reads the Wii Remote and USB keyboard into one frame's input, and feeds the
@@ -86,9 +86,9 @@ namespace {
     /**
      * @brief A full-screen message for before the app can run (no SD card, no font).
      */
-#ifdef CLIENTWARDEN_WII_TEST_BUILD
+#ifdef CLIENTWARDEN_CONSOLE_TEST_BUILD
     void boot_(const char* step) {
-        FILE* f = std::fopen("sd:/apps/clientwarden/boot-log.txt", "a");
+        FILE* f = std::fopen((appDirectory() / "boot-log.txt").c_str(), "a");
         if (f) {
             std::fprintf(f, "%s\n", step);
             std::fclose(f);
@@ -109,7 +109,7 @@ namespace {
 }
 
 int main(int, char**) {
-#ifdef CLIENTWARDEN_WII_TEST_BUILD
+#ifdef CLIENTWARDEN_CONSOLE_TEST_BUILD
     std::set_terminate([]() {
         std::exception_ptr error = std::current_exception();
         try {
@@ -160,7 +160,7 @@ int main(int, char**) {
     boot_("gfx ok");
     App app(*gfx);
     boot_("app");
-#ifdef CLIENTWARDEN_WII_TEST_BUILD
+#ifdef CLIENTWARDEN_CONSOLE_TEST_BUILD
     TestScript script;
     script.load(appDirectory());
     app.onError([&script](std::string_view method, std::string_view error) {
@@ -171,7 +171,7 @@ int main(int, char**) {
     bool quit = false;
     while (!quit) {
         Input input = readInput_(quit);
-#ifdef CLIENTWARDEN_WII_TEST_BUILD
+#ifdef CLIENTWARDEN_CONSOLE_TEST_BUILD
         if (!script.step(app, input)) {
             break;
         }

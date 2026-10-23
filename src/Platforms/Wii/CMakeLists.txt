@@ -5,57 +5,17 @@ project(ClientWardenWii C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CLIENTWARDEN_WII ON)
 set(REPO ${CMAKE_CURRENT_SOURCE_DIR}/../../..)
-set(WII_DEPS $ENV{WII_DEPS})
+set(WII_DEPS $ENV{CONSOLE_DEPS})
 
-# The core's dependencies, prebuilt in the image, under the names the core links against.
-add_library(botan::botan STATIC IMPORTED)
-set_target_properties(botan::botan PROPERTIES IMPORTED_LOCATION ${WII_DEPS}/lib/libbotan-3.a
-    INTERFACE_INCLUDE_DIRECTORIES ${WII_DEPS}/include/botan-3)
-add_library(nlohmann_json::nlohmann_json INTERFACE IMPORTED)
-set_target_properties(nlohmann_json::nlohmann_json PROPERTIES INTERFACE_INCLUDE_DIRECTORIES ${WII_DEPS}/include)
-add_library(spdlog::spdlog INTERFACE IMPORTED)
-# newlib's struct tm has no tm_gmtoff, and the Wii has no time zone database anyway.
-set_target_properties(spdlog::spdlog PROPERTIES INTERFACE_INCLUDE_DIRECTORIES ${WII_DEPS}/include
-    INTERFACE_COMPILE_DEFINITIONS SPDLOG_NO_TZ_OFFSET)
-add_library(msgpack-cxx INTERFACE IMPORTED)
-set_target_properties(msgpack-cxx PROPERTIES INTERFACE_INCLUDE_DIRECTORIES ${WII_DEPS}/include
-    INTERFACE_COMPILE_DEFINITIONS MSGPACK_NO_BOOST)
-add_library(Boost::boost INTERFACE IMPORTED)
-set_target_properties(Boost::boost PROPERTIES INTERFACE_INCLUDE_DIRECTORIES ${WII_DEPS}/include)
-file(GLOB_RECURSE BOOST_URL_SOURCES ${WII_DEPS}/src/boost_url/*.cpp)
-add_library(boost_url STATIC ${BOOST_URL_SOURCES})
-target_link_libraries(boost_url PUBLIC Boost::boost)
-target_compile_definitions(boost_url PUBLIC BOOST_URL_STATIC_LINK BOOST_URL_NO_LIB)
-add_library(Boost::url ALIAS boost_url)
-
-add_subdirectory(${REPO}/src/core core)
-
-# mbedTLS for HTTPS; the app supplies its entropy and millisecond clock.
-add_library(mbedtls_all INTERFACE)
-target_include_directories(mbedtls_all INTERFACE ${WII_DEPS}/include)
-target_link_libraries(mbedtls_all INTERFACE ${WII_DEPS}/lib/libmbedtls.a ${WII_DEPS}/lib/libmbedx509.a
-    ${WII_DEPS}/lib/libmbedcrypto.a ${WII_DEPS}/lib/libeverest.a ${WII_DEPS}/lib/libp256m.a)
-
-# Test builds (-DCLIENTWARDEN_WII_TEST_BUILD=ON) add the Dolphin script runner and the
-# entropy override; release builds never contain them.
-option(CLIENTWARDEN_WII_TEST_BUILD "Build for automated testing in Dolphin (insecure)" OFF)
+include(${REPO}/src/Platforms/Shared/Console/console.cmake)
 
 file(GLOB WII_PLATFORM_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Platform/*.cpp)
 file(GLOB_RECURSE WII_UI_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/UI/*.cpp)
-add_executable(clientwarden ${WII_PLATFORM_SOURCES} ${WII_UI_SOURCES}
-    ${REPO}/src/Platforms/Shared/JsonBridge/JsonBridge.cpp
-    ${REPO}/src/Platforms/Shared/JsonBridge/JsonBridgeShared.cpp)
-target_include_directories(clientwarden PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${REPO}/src/Platforms/Shared)
-target_link_libraries(clientwarden PRIVATE clientwarden_core_runtime mbedtls_all)
-# std::thread gets libogc's 8 KB default stack; UI/thread_stack.cpp gives it a real one.
-target_link_options(clientwarden PRIVATE -Wl,--wrap=pthread_create)
-# UTC correction for the console clock (Platform/System.cpp).
-target_link_options(clientwarden PRIVATE -Wl,--wrap=__syscall_gettod_r -Wl,--wrap=__syscall_clock_gettime)
-if (CLIENTWARDEN_WII_TEST_BUILD)
-    target_compile_definitions(clientwarden PRIVATE CLIENTWARDEN_WII_TEST_BUILD)
-endif()
+add_executable(clientwarden ${WII_PLATFORM_SOURCES} ${WII_UI_SOURCES})
+cw_console_app(clientwarden)
+# Platform/ holds console_metrics.h and console_net.h for the shared code.
+target_include_directories(clientwarden PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/Platform)
 
 # SDL2 (+ttf) from devkitPro's portlibs, then libogc.
 find_package(PkgConfig REQUIRED)

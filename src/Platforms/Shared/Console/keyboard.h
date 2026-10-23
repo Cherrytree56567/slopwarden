@@ -7,7 +7,7 @@
  * The on-screen keyboard every text field opens: QWERTY with shift and a symbols page, driven
  * by the pointer or the D-pad. A USB keyboard types into it too (Enter finishes).
  */
-namespace clientwarden::wii::ui {
+namespace clientwarden::console::ui {
     class Keyboard {
     public:
         using Done = std::function<void(SecureString)>;

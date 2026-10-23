@@ -1,6 +1,6 @@
 #include "keyboard.h"
 
-namespace clientwarden::wii::ui {
+namespace clientwarden::console::ui {
     namespace {
         constexpr const char* c_letters[] = { "1234567890", "qwertyuiop", "asdfghjkl@", "zxcvbnm.-_" };
         constexpr const char* c_symbols[] = { "!\"#$%&'()*", "+,/:;<=>?[", "\\]^`{|}~ .", "-_@0123456" };

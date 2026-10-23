@@ -1,5 +1,5 @@
 #pragma once
-#ifdef CLIENTWARDEN_WII_TEST_BUILD
+#ifdef CLIENTWARDEN_CONSOLE_TEST_BUILD
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -12,7 +12,7 @@
  * wait <ms>, entropy, click <x> <y>, focus <label>, press, type <text>, key <name>,
  * shot <name>, log <text>, quit.
  */
-namespace clientwarden::wii::ui {
+namespace clientwarden::console::ui {
     class TestScript {
     public:
         /**

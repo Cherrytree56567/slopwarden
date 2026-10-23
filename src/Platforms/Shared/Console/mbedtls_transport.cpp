@@ -9,12 +9,11 @@
 #include <mbedtls/error.h>
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509_crt.h>
-#include <network.h>
-#include <ogc/lwp_watchdog.h>
 #include <psa/crypto.h>
 
-#include "System.h"
-#include "Utc.h"
+#include "console_net.h" // per platform: sockets and a millisecond clock
+#include "platform.h"
+#include "utc.h"
 #include "platform/http/platform_transport.h"
 #include "platform/paths/paths.h"
 #include "platform/random/random.h"
@@ -22,9 +21,9 @@
 #include "utils/logger/logger.h"
 
 /*
- * HTTPS on the Wii: libogc's sockets carrying mbedTLS, verified against Mozilla's CA bundle
- * (cacert.pem in the app folder). One request per connection, one request at a time: mbedTLS
- * is built without threading support, and the Wii has a single core anyway. There is no
+ * HTTPS on the consoles (Wii, 3DS): their sockets (console_net.h) carrying mbedTLS, verified
+ * against Mozilla's CA bundle (cacert.pem in the app folder). One request per connection, one
+ * request at a time: mbedTLS is built without threading support. There is no
  * notification hub (listen() declines), so the vault syncs when unlocked and on demand.
  */
 
@@ -34,7 +33,7 @@
  */
 extern "C" {
 mbedtls_ms_time_t mbedtls_ms_time(void) {
-    return static_cast<mbedtls_ms_time_t>(ticks_to_millisecs(gettime()));
+    return static_cast<mbedtls_ms_time_t>(clientwarden::console::net::milliseconds());
 }
 
 psa_status_t mbedtls_psa_external_get_random(
@@ -167,7 +166,7 @@ namespace clientwarden {
                 }
                 mbedtls_ssl_free(&m_ssl);
                 if (m_socket >= 0) {
-                    net_close(m_socket);
+                    console::net::close(m_socket);
                 }
             }
 
@@ -176,18 +175,8 @@ namespace clientwarden {
              */
             bool open(const Url& url) {
                 mbedtls_ssl_init(&m_ssl);
-                hostent* host = net_gethostbyname(url.m_host.c_str());
-                if (!host || host->h_addrtype != AF_INET || !host->h_addr_list[0]) {
-                    Logger::get()->warn("HTTP: can't resolve {}", url.m_host);
-                    return false;
-                }
-                sockaddr_in address = {};
-                address.sin_family = AF_INET;
-                address.sin_port = htons(static_cast<u16>(url.m_port));
-                std::memcpy(&address.sin_addr, host->h_addr_list[0], sizeof(address.sin_addr));
-
-                m_socket = net_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
-                if (m_socket < 0 || net_connect(m_socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) < 0) {
+                m_socket = console::net::connect(url.m_host.c_str(), url.m_port);
+                if (m_socket < 0) {
                     Logger::get()->warn("HTTP: can't connect to {}:{}", url.m_host, url.m_port);
                     return false;
                 }
@@ -219,7 +208,7 @@ namespace clientwarden {
                 const unsigned char* bytes = static_cast<const unsigned char*>(data);
                 while (size > 0) {
                     int written = m_tls_started ? mbedtls_ssl_write(&m_ssl, bytes, size)
-                                                : net_send(m_socket, bytes, size, 0);
+                                                : console::net::send(m_socket, bytes, size, 0);
                     if (written == MBEDTLS_ERR_SSL_WANT_WRITE || written == MBEDTLS_ERR_SSL_WANT_READ) {
                         continue;
                     }
@@ -238,7 +227,7 @@ namespace clientwarden {
             int read(unsigned char* buffer, size_t size) {
                 while (true) {
                     int got = m_tls_started ? mbedtls_ssl_read(&m_ssl, buffer, size)
-                                            : net_recv(m_socket, buffer, size, 0);
+                                            : console::net::receive(m_socket, buffer, size, 0);
                     if (got == MBEDTLS_ERR_SSL_WANT_READ || got == MBEDTLS_ERR_SSL_WANT_WRITE) {
                         continue;
                     }
@@ -251,16 +240,16 @@ namespace clientwarden {
 
         private:
             static int send_(void* context, const unsigned char* data, size_t size) {
-                int sent = net_send(static_cast<Connection*>(context)->m_socket, data, size, 0);
+                int sent = console::net::send(static_cast<Connection*>(context)->m_socket, data, size, 0);
                 return sent < 0 ? MBEDTLS_ERR_SSL_INTERNAL_ERROR : sent;
             }
 
             static int receive_(void* context, unsigned char* data, size_t size) {
-                int got = net_recv(static_cast<Connection*>(context)->m_socket, data, size, 0);
+                int got = console::net::receive(static_cast<Connection*>(context)->m_socket, data, size, 0);
                 return got < 0 ? MBEDTLS_ERR_SSL_INTERNAL_ERROR : got;
             }
 
-            s32 m_socket = -1;
+            int m_socket = -1;
             mbedtls_ssl_context m_ssl;
             bool m_tls_started = false;
         };
@@ -362,7 +351,7 @@ namespace clientwarden {
         }
     }
 
-    class WiiTransport : public HttpTransport {
+    class MbedTlsTransport : public HttpTransport {
     public:
         void configure(ServerUrls urls) override {
             std::lock_guard<std::mutex> lock(m_mutex_);
@@ -380,7 +369,7 @@ namespace clientwarden {
              */
             static std::mutex s_exchange_mutex;
             std::lock_guard<std::mutex> exchange(s_exchange_mutex);
-            if (!wii::networkReady()) {
+            if (!console::platform::networkReady()) {
                 return HttpResponse();
             }
 
@@ -441,7 +430,7 @@ namespace clientwarden {
             SecureString head = SecureString(methodName_(request.m_method)) + " " + url.m_path + " HTTP/1.1\r\n" +
                                 "Host: " + url.m_host +
                                 (default_port ? SecureString() : SecureString(":") + toSecureString(url.m_port)) +
-                                "\r\nConnection: close\r\nUser-Agent: ClientWarden (Wii)\r\n";
+                                "\r\nConnection: close\r\nUser-Agent: ClientWarden\r\n";
             for (const std::pair<SecureString, SecureString>& header : request.m_headers) {
                 head += header.first + ": " + header.second + "\r\n";
             }
@@ -485,7 +474,7 @@ namespace clientwarden {
                 }
             }
             if (std::map<SecureString, SecureString, std::less<>>::iterator date = headers.find("date"); date != headers.end()) {
-                wii::utc::observeServerDate(date->second);
+                console::utc::observeServerDate(date->second);
             }
 
             HttpResponse response;
@@ -532,6 +521,6 @@ namespace clientwarden {
     };
 
     std::shared_ptr<HttpTransport> createPlatformTransport() {
-        return std::make_shared<WiiTransport>();
+        return std::make_shared<MbedTlsTransport>();
     }
 }

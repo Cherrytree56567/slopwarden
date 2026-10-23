@@ -1,8 +1,8 @@
 #include <pthread.h>
 
 /*
- * libogc gives threads an 8 KB stack unless told otherwise, and std::thread/std::jthread
- * never say: far too small for the core's workers, TLS handshakes or key derivation, which
+ * The consoles' pthread layers give threads a tiny stack unless told otherwise (8 KB on the Wii),
+ * and std::thread/std::jthread never say: far too small for the core's workers, TLS handshakes or key derivation, which
  * overflow it and crash. The link wraps pthread_create (-Wl,--wrap=pthread_create) so threads
  * created without attributes get a real stack.
  */

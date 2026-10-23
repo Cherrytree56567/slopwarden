@@ -1,4 +1,4 @@
-#include "Utc.h"
+#include "utc.h"
 
 #include <algorithm>
 #include <array>
@@ -7,11 +7,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <sys/time.h>
 
-#include "System.h"
+#include "platform.h"
 #include "platform/paths/paths.h"
 
-namespace clientwarden::wii::utc {
+namespace clientwarden::console::utc {
     namespace {
         std::atomic<int32_t> g_offset = 0; // 32 bits: 64-bit atomics need libatomic on the Wii
         std::atomic<bool> g_learned = false;
@@ -92,4 +93,31 @@ namespace clientwarden::wii::utc {
             std::fclose(f);
         }
     }
+}
+
+/*
+ * The console's clock is whatever the user set in the system settings, in local time, with no time
+ * zone. TOTP codes and token expiry need UTC, so every gettimeofday()/clock_gettime() is
+ * shifted by the offset learned from servers' Date headers (below). Wired in with the
+ * linker's --wrap so newlib's time functions all go through it.
+ */
+extern "C" {
+int __real___syscall_gettod_r(struct _reent* ptr, struct timeval* tp, struct timezone* tz);
+int __real___syscall_clock_gettime(clockid_t clock_id, struct timespec* tp);
+
+int __wrap___syscall_gettod_r(struct _reent* ptr, struct timeval* tp, struct timezone* tz) {
+    int result = __real___syscall_gettod_r(ptr, tp, tz);
+    if (result == 0 && tp) {
+        tp->tv_sec += clientwarden::console::utc::offsetSeconds();
+    }
+    return result;
+}
+
+int __wrap___syscall_clock_gettime(clockid_t clock_id, struct timespec* tp) {
+    int result = __real___syscall_clock_gettime(clock_id, tp);
+    if (result == 0 && tp && clock_id == CLOCK_REALTIME) {
+        tp->tv_sec += clientwarden::console::utc::offsetSeconds();
+    }
+    return result;
+}
 }
