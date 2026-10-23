@@ -1,0 +1,36 @@
+name: Wii
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # devkitPPC plus mbedTLS, Botan and the header-only libraries built for the Wii.
+    - name: Build the build image
+      run: docker build -t clientwarden-wii -f tools/docker/wii.Dockerfile tools/docker
+
+    - name: Build
+      run: |
+        docker run --rm -v "$PWD":/src clientwarden-wii /src/tools/docker/build-wii.sh
+        sudo chown -R "$(id -u):$(id -g)" build
+
+    # Release builds must not contain the Dolphin test hooks.
+    - name: Check for test hooks
+      run: |
+        if strings build/wii/apps/clientwarden/boot.dol | grep -qiE "test-script|creditForTesting"; then
+            echo "test hooks in a release build"; exit 1
+        fi
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ClientWarden-wii
+        path: build/wii/apps

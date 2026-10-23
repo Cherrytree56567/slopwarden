@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<app version="1">
+  <name>ClientWarden</name>
+  <coder>CT5</coder>
+  <version>1.0.0</version>
+  <short_description>Bitwarden password manager</short_description>
+  <long_description>A native Bitwarden client. Needs an SD card and an internet connection. Enter your master password every time; move the Wii Remote at start-up so ClientWarden can gather the randomness it needs for encryption.</long_description>
+</app>
