@@ -1,0 +1,36 @@
+name: 3DS
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # devkitARM plus mbedTLS, Botan and the header-only libraries built for the 3DS.
+    - name: Build the build image
+      run: docker build -t clientwarden-3ds -f tools/docker/3ds.Dockerfile tools/docker
+
+    - name: Build
+      run: |
+        docker run --rm -v "$PWD":/src clientwarden-3ds /src/tools/docker/build-3ds.sh
+        sudo chown -R "$(id -u):$(id -g)" build
+
+    # Release builds must not contain the emulator test hooks.
+    - name: Check for test hooks
+      run: |
+        if strings build/3ds/3ds/clientwarden/clientwarden.3dsx | grep -qiE "test-script|creditForTesting"; then
+            echo "test hooks in a release build"; exit 1
+        fi
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ClientWarden-3ds
+        path: build/3ds/3ds

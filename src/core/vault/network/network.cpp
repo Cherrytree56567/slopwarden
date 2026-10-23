@@ -124,6 +124,9 @@ namespace clientwarden {
 #elif defined(HW_RVL)
         info.m_type = "8"; // no Wii type; the desktop one matches our client id
         info.m_name = "nintendo wii";
+#elif defined(__3DS__)
+        info.m_type = "8"; // no 3DS type; the desktop one matches our client id
+        info.m_name = "nintendo 3ds";
 #else
         info.m_type = "8";
         info.m_name = "linux";
