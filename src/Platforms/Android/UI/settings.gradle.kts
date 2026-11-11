@@ -24,3 +24,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "Clientwarden"
 include(":app")
+include(":wear")

@@ -10,7 +10,7 @@ function(buildUI _target)
     endif()
 
     add_custom_target(UI ALL
-        COMMAND ${GRADLE_RUN} :app:assembleDebug
+        COMMAND ${GRADLE_RUN} :app:assembleDebug :wear:assembleDebug
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/src/Platforms/Android/UI/
         COMMENT "Building Android UI through GradleW"
     )
